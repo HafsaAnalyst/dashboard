@@ -3180,6 +3180,17 @@ def render_meta1_tab():
         return d
     ps, psp = _ps(e1, conv_ids), _ps(e1p, conv_ids_p)
 
+    # Global City filter (top of page): Melbourne / Sydney restrict the Meta tab
+    # to that ad account and its leads (account is the campaign's ad account).
+    # All / Others / Unidentified show everything (no Meta-side city for those).
+    if city in ("Melbourne", "Sydney"):
+        if not m_cur.empty:
+            m_cur = m_cur[m_cur["account"] == city]
+        if not m_pri.empty:
+            m_pri = m_pri[m_pri["account"] == city]
+        ps  = ps[ps["account"] == city].copy()
+        psp = psp[psp["account"] == city].copy()
+
     def _agg(m, p):
         return dict(
             spend=(float(m["spend"].sum()) * fx if not m.empty else 0.0),
