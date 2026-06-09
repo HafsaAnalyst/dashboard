@@ -197,16 +197,10 @@ def get_con() -> duckdb.DuckDBPyConnection:
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def paid_consults_detail(since_s: str, until_s: str) -> "pd.DataFrame":
-    """Canonical paid consultations — the SINGLE source of truth shared by the
-    Funnels_1 and Counsellors tabs so their numbers always agree.
-
-    One row per Stripe **succeeded** charge (net > 0) whose contact has an
-    appointment on a **paid calendar** (Nasir / Gurbir / Turab). The charge is
-    matched to that contact's nearest paid-calendar appointment; if the nearest
-    one is a **follow-up** the charge is excluded. Counsellor is attributed from
-    the matched appointment's calendar. Columns: contact_id · net · amount ·
-    created_date · counsellor · calendar_id · appt_created · appt_scheduled."""
+def _all_paid_charges(today_s: str) -> "pd.DataFrame":
+    """Every succeeded Stripe charge since 2024 (ANY date). A consultation can be
+    paid before or after the period it falls in, so paid-consult matching looks
+    at all charges — not only those inside the selected window."""
     import sys as _sys
     from pathlib import Path as _Path
     _sys.path.insert(0, str(_Path(__file__).resolve().parent))
@@ -214,11 +208,27 @@ def paid_consults_detail(since_s: str, until_s: str) -> "pd.DataFrame":
         import stripe_revenue as _srev
         if not _srev.enabled():
             return pd.DataFrame()
-        ch = _srev.fetch_charges(since_s, until_s)
+        return _srev.fetch_charges("2024-01-01", today_s)
     except Exception:
         return pd.DataFrame()
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def paid_consults_detail(since_s: str, until_s: str) -> "pd.DataFrame":
+    """Canonical paid consultations — the SINGLE source of truth shared by the
+    Funnels_1 and Counsellors tabs so their numbers always agree.
+
+    A paid consultation = a non-follow-up appointment on a **paid calendar**
+    (Nasir / Gurbir / Turab) whose **meeting date (start_time)** falls in the
+    selected window, AND whose contact has a Stripe **succeeded** charge for that
+    counsellor — **on any date** (a consult can be paid before/after the window).
+    Counsellor is attributed from the matched appointment's calendar. Columns:
+    contact_id · net · amount · created_date · counsellor · calendar_id ·
+    appt_created · appt_scheduled."""
+    ch = _all_paid_charges(date.today().isoformat())
     if ch is None or ch.empty:
         return pd.DataFrame()
+    _ws, _wu = date.fromisoformat(since_s), date.fromisoformat(until_s)
     paid_cals = [cid for c in COUNSELLORS if c.get("is_paid") for cid in c["calendar_ids"]]
     if not paid_cals:
         return pd.DataFrame()
@@ -232,11 +242,12 @@ def paid_consults_detail(since_s: str, until_s: str) -> "pd.DataFrame":
         return pd.DataFrame()
     ap["is_fu"] = ap["title"].str.contains(r"follow[ -]?up", case=False, regex=True, na=False)
     ap["ad"]    = pd.to_datetime(ap["ad"]).dt.date
+    ap["sd"]    = pd.to_datetime(ap["start_time"], errors="coerce").dt.date   # meeting date
     cal_couns   = {cid: c["name"].split(" - ")[0] for c in COUNSELLORS for cid in c["calendar_ids"]}
     grp: dict = {}
     for r in ap.itertuples(index=False):
         grp.setdefault(r.contact_id, []).append(r)
-    rows = []
+    _by_consult: dict = {}   # one entry per consultation; charges summed into it
     for c in ch.itertuples(index=False):
         if c.net is None or c.net <= 0:
             continue
@@ -246,17 +257,36 @@ def paid_consults_detail(since_s: str, until_s: str) -> "pd.DataFrame":
         nearest = min(cand, key=lambda x: abs((x.ad - c.created_date).days) if x.ad else 9999)
         if nearest.is_fu:                  # follow-up consultation -> excluded
             continue
-        rows.append({
-            "contact_id":     c.contact_id,
-            "net":            float(c.net),
-            "amount":         float(getattr(c, "amount", c.net) or 0),
-            "created_date":   c.created_date,
-            "counsellor":     cal_couns.get(nearest.calendar_id, "—"),
-            "calendar_id":    nearest.calendar_id,
-            "appt_created":   nearest.ad,
-            "appt_scheduled": nearest.start_time,
-        })
-    return pd.DataFrame(rows)
+        # the CONSULTATION (meeting date) must fall in the selected window and be a
+        # weekday — matches how the matrix counts "Appointments". The payment date
+        # itself is unrestricted.
+        sd = nearest.sd
+        try:
+            in_window = pd.notna(sd) and _ws <= sd <= _wu and sd.weekday() < 5
+        except Exception:
+            in_window = False
+        if not in_window:
+            continue
+        # one row per CONSULTATION (key = contact + calendar + meeting date). A
+        # consult paid in installments has >1 charge → sum them, so Paid counts
+        # consultations (not charges).
+        key = (c.contact_id, nearest.calendar_id, sd)
+        e = _by_consult.get(key)
+        if e is None:
+            _by_consult[key] = {
+                "contact_id":     c.contact_id,
+                "net":            float(c.net),
+                "amount":         float(getattr(c, "amount", c.net) or 0),
+                "created_date":   c.created_date,
+                "counsellor":     cal_couns.get(nearest.calendar_id, "—"),
+                "calendar_id":    nearest.calendar_id,
+                "appt_created":   nearest.ad,
+                "appt_scheduled": nearest.start_time,
+            }
+        else:
+            e["net"]    += float(c.net)
+            e["amount"] += float(getattr(c, "amount", c.net) or 0)
+    return pd.DataFrame(list(_by_consult.values()))
 
 
 @st.cache_data(ttl=60)
