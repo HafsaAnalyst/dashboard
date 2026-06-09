@@ -1,0 +1,243 @@
+# =====================================================================
+# The Migration Dashboard — Metrics Registry
+# =====================================================================
+# Single source of truth for every dashboard KPI.
+# - Streamlit pages in dashboards/pages/ read formulas from this file
+# - SQL views in dashboards/sql/ implement them
+# - The sign-off doc references metric IDs from here
+#
+# Changing a formula = bump `version` + re-circulate for approval.
+# =====================================================================
+
+version: "1.0.0"
+locked_date: "2026-05-17"
+status: pending_approval
+
+dashboard:
+  name: "The Migration Dashboard"
+  refresh: hourly
+  refresh_label: "Updated hourly"
+  default_period: current_month
+  comparison_window: same_length_immediately_prior   # e.g. May 1-17 vs Apr 14-30
+  scope_pipeline: "L2C - Education"                  # all GHL queries scoped here
+
+# ---------------------------------------------------------------------
+# Date fields per source — DIFFERENT TABS USE DIFFERENT FIELDS ON THE
+# SAME TABLE. Read this when interpreting "X in period".
+# ---------------------------------------------------------------------
+date_fields:
+  ghl_contacts:
+    field: date_added
+    means: "when contact was created in GHL"
+
+  ghl_opportunities:
+    field: created_at
+    means: "when opp was created in GHL"
+
+  ghl_appointments_executive:
+    field: date_added
+    means: "when the booking was made — used by Executive tab"
+    etl_status: NEEDS_COLUMN   # see prerequisites below
+
+  ghl_appointments_counsellor:
+    field: start_time
+    means: "when the meeting is scheduled to happen — used by Counsellor tab"
+
+  meta_insights:
+    field: date_start
+
+  ga4:
+    field: date
+
+  gsc:
+    field: date
+
+# ---------------------------------------------------------------------
+# Global filters
+# ---------------------------------------------------------------------
+filters:
+  city:
+    All:
+      meta_account_labels: [Melbourne, Sydney]
+      ghl_city_patterns: []     # empty = no filter
+      ga4_city: null
+      gsc_country_region: null
+    Melbourne:
+      meta_account_labels: [Melbourne]
+      # Widened: matches "Melbourne", "Greater Melbourne", "Melbourne VIC",
+      # plain "VIC", "Victoria". Substring + exact-state catches.
+      ghl_city_patterns:
+        - "%melb%"
+        - "%victoria%"
+        - "vic"        # exact match on bare state code
+      ga4_city: Melbourne
+      gsc_country_region: Victoria
+    Sydney:
+      meta_account_labels: [Sydney]
+      ghl_city_patterns:
+        - "%sydney%"
+        - "%wales%"    # New South Wales
+        - "nsw"        # exact match on bare state code
+      ga4_city: Sydney
+      gsc_country_region: New South Wales
+    Others:
+      # Catches contacts with a city value that is NOT Mel and NOT Syd
+      # (e.g. Brisbane, Perth, Adelaide, regional suburbs, overseas).
+      # NULL/empty city is EXCLUDED — those are "Unidentified", not "Other".
+      # Meta cards show 0 / N/A because Meta only has Mel + Syd accounts.
+      meta_account_labels: []        # no Meta account → spend/leads = 0
+      ghl_city_exclude_mel_syd: true # see SQL: NOT mel AND NOT syd AND city IS NOT NULL
+      ga4_city: __other__            # handled in app layer: city != Mel AND != Syd
+      gsc_country_region: __other__
+    Unidentified:
+      # Contacts where city IS NULL or empty string. Currently ~75% of
+      # GHL contacts have no city — this bucket exposes that explicitly.
+      # Meta cards show 0 / N/A.
+      meta_account_labels: []        # no Meta account → spend/leads = 0
+      ghl_city_unidentified: true    # see SQL: city IS NULL OR city = ''
+      ga4_city: __unidentified__
+      gsc_country_region: __unidentified__
+
+# ---------------------------------------------------------------------
+# Card definitions
+# ---------------------------------------------------------------------
+cards:
+
+  - id: total_leads
+    tier: 1
+    tab: Executive
+    title: "Total Leads"
+    main:
+      label: "Meta Results"
+      description: >
+        Meta `result_count` summed across campaigns whose objective is a
+        lead/conversion objective, for accounts in the city filter, with
+        date_start in the period.
+      sql_view: vw_card_total_leads_main
+      objectives_included:
+        - OUTCOME_LEADS
+        - LEAD_GENERATION
+        - OUTCOME_SALES
+        - CONVERSIONS
+        - LEADS
+    secondary:
+      label: "GHL opps (Paid Social)"
+      description: >
+        Distinct L2C - Education opps created in period whose contact has
+        first_attribution_source ILIKE 'paid_social' AND whose contact.city
+        matches the city filter.
+      sql_view: vw_card_total_leads_secondary
+    comparison:
+      window: prior_same_length
+      direction_good: up
+
+  - id: avg_cpl
+    tier: 1
+    tab: Executive
+    title: "Avg CPL"
+    main:
+      description: >
+        Spend in lead-objective campaigns / total_leads.main.
+        Both numerator and denominator come from vw_card_total_leads_main.
+      sql_view: vw_card_avg_cpl_main
+    secondary:
+      label: "Spend / Paid Social opps"
+      description: "Same spend / total_leads.secondary"
+      sql_view: vw_card_avg_cpl_secondary
+    comparison:
+      window: prior_same_length
+      direction_good: down
+
+  - id: lead_to_booking
+    tier: 1
+    tab: Executive
+    title: "Lead → Booking"
+    description: >
+      Of all L2C - Education opps created in the period, what fraction
+      have at least one matching appointment (matched by contact_id)
+      with appointment.date_added in the period.
+    sql_view: vw_card_lead_to_booking
+    comparison:
+      window: prior_same_length
+      direction_good: up
+
+  - id: show_rate
+    tier: 1
+    tab: Executive
+    title: "Show Rate"
+    description: >
+      Of appointments whose date_added is in the period for contacts who
+      have at least one L2C - Education opp AND whose meeting time has
+      already passed (start_time <= now()) AND whose outcome has resolved
+      (showed | noshow | cancelled), what fraction have canonical_outcome
+      = 'show'.
+    sql_view: vw_card_show_rate
+    notes:
+      - "Denominator excludes appointments whose meeting hasn't happened yet"
+      - "Denominator excludes pending/new/confirmed (unresolved) outcomes"
+    comparison:
+      window: prior_same_length
+      direction_good: up
+
+  - id: coes
+    tier: 1
+    tab: Executive
+    title: "COEs"
+    description: >
+      Count of L2C - Education opps CREATED in the period whose current
+      stage is 'COE Received'. Cohort: leads that came in this month →
+      how many have already reached COE Received.
+    sql_view: vw_card_coes
+    comparison:
+      window: prior_same_length
+      direction_good: up
+
+  - id: ad_spend
+    tier: 1
+    tab: Executive
+    title: "Ad Spend"
+    description: >
+      Total Meta spend across selected accounts in the period.
+      No objective filter — includes ALL campaigns (brand, awareness,
+      lead, conversion, etc.). City filter applies via account_label.
+    sql_view: vw_card_ad_spend
+    comparison:
+      window: prior_same_length
+      direction_good: context_dependent
+
+  - id: revenue
+    tier: 1
+    tab: Executive
+    title: "Revenue"
+    description: >
+      SUM(monetary_value) across ALL L2C - Education opportunities
+      (regardless of status: open/won/lost/abandoned) created in
+      the period. Per locked decision: monetary_value is treated as
+      the final figure, payments table not joined.
+    sql_view: vw_card_revenue
+    comparison:
+      window: prior_same_length
+      direction_good: up
+
+# ---------------------------------------------------------------------
+# Build prerequisites — must be done before SQL views resolve correctly
+# ---------------------------------------------------------------------
+prerequisites:
+  - id: schema_add_appt_date_added
+    description: "Add `date_added TIMESTAMP` to fact_appointments"
+    file: migration-dashboard/models/schema.sql
+    blocking_cards: [lead_to_booking, show_rate]
+
+  - id: normalize_capture_appt_date_added
+    description: "normalize_appointments must write `date_added` from raw `dateAdded`"
+    file: migration-dashboard/etl/normalize.py
+    blocking_cards: [lead_to_booking, show_rate]
+
+  - id: backfill_etl
+    description: "Re-run ETL for current + prior comparison window after schema change"
+    blocking_cards: [lead_to_booking, show_rate]
+
+  - id: cron_hourly
+    description: "Switch ETL from daily 03:00 to hourly via Task Scheduler"
+    file: migration-dashboard/etl/run_etl.py
+    blocking_cards: []   # cosmetic — required to truthfully display 'Updated hourly'

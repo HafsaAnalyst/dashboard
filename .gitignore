@@ -1,0 +1,27 @@
+# --- secrets (NEVER commit these) ---
+.env
+.env.*
+.streamlit/secrets.toml
+*.json            # Google service-account keys live in .json — keep ALL out
+
+# --- data (80 MB DuckDB lives in MotherDuck on the cloud, not in git) ---
+data/
+*.duckdb
+*.duckdb.wal
+
+# --- python / env ---
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# --- logs & scratch ---
+*.log
+scripts/*.log.csv
+zz_*.py
+_newtab*.txt
+
+# --- OS noise ---
+.DS_Store
+Thumbs.db

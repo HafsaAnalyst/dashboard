@@ -1,0 +1,24 @@
+# Python packages for the dashboard + ETL.
+# Deploy target: Python 3.13 (Streamlit Community Cloud — NOT 3.14).
+# Versions left loose on purpose so they resolve on 3.13.
+
+# --- core app ---
+streamlit
+duckdb
+pandas
+numpy
+altair
+requests
+PyYAML
+openpyxl
+python-dotenv
+python-docx
+matplotlib
+
+# --- forecasting (Forecast & Goals tab) ---
+prophet
+
+# --- ETL only: Google Analytics 4 + Search Console ---
+google-analytics-data
+google-api-python-client
+google-auth

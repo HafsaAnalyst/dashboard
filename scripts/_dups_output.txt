@@ -1,0 +1,293 @@
+﻿=== OPPORTUNITY COUNT PER EMAIL ===
+                        email  opp_count
+        arhamarif06@gmail.com         13
+kaleemullahbhutta10@gmail.com         13
+      ihsankhan2662@gmail.com          9
+     ahsanzaib51214@gmail.com          8
+   usmanchadhar222@icloud.com          8
+     ehsansunny5666@gmail.com          7
+      maazbinkaleem@gmail.com          7
+      tehseenshah36@gmail.com          7
+        nabeel.auth@gmail.com          7
+    hussainsyed1412@gmail.com          7
+       navi.tung007@gmail.com          6
+          alih77200@gmail.com          6
+   sherazgujjar1555@gmail.com          6
+    zainmuhammad626@gmail.com          5
+       nomihassan82@gmail.com          4
+   ajamesfelix.work@gmail.com          4
+      sardar1232018@gmail.com          4
+       mehran123123@gmail.com          3
+homaayoonhassan0480@gmail.com          3
+    usamakalyar6071@gmail.com          3
+      nodirmaksudov@gmail.com          3
+     jawadali224400@gmail.com          3
+           ukatyal4@gmail.com          3
+      mianabrar0336@gmail.com          3
+     asadbekuzb2008@gmail.com          2
+    farooqrasheed25@gmail.com          2
+     hassansohail20@gmail.com          2
+  mohsinraza3324090@gmail.com          2
+          mahal20kj@gmail.com          2
+      shahalidepar2@gmail.com          1
+
+
+=== EMAILS WITH MULTIPLE OPPORTUNITIES (29) ===
+
+--- arhamarif06@gmail.com (13 opps) ---
+                                   pipeline                 stage status opp_created       opportunity_id
+                                   Accounts     Send Payment Plan   open  2026-05-12 Xe7u0v5iVYmYO9FH6bWv
+                    CLT - Onshore Admission          COE Received   open  2026-05-12 CVdvGNARjkJOouGd9ZoE
+                            L2C - Education          COE Received   open  2026-04-08 zirtuoIvhO7YvjGYXQLk
+                            L2C - Education          COE Received   open  2026-03-19 33lsCjqrASvzhbPIcucL
+          CLT - Admissions Sub-Applications Offer Letter Received   open  2026-03-17 Yu4h8Tjdgf8ue5TW0ues
+                    CLT - Onshore Admission          COE Received   open  2026-03-12 8K8X8SzVpREwhlEZGfGF
+          CLT - Admissions Sub-Applications Offer Letter Received   open  2026-03-12 q57SNmd8mx4t5oEIhIvy
+Agentcis_(2) Australian Education - Onshore          COE Received   open  2026-02-18 B1DXMWOMRY3uX8CsWzKC
+Agentcis_(2) Australian Education - Onshore Application Initiated   lost  2026-02-18 9pUgL2OMLdfduwORnfEp
+Agentcis_(2) Australian Education - Onshore Application Initiated   lost  2026-02-18 MNnmllk1PcACiT7wzsQb
+Agentcis_(2) Australian Education - Onshore Application Initiated   lost  2026-02-18 reCIm9vDwT7UBtthP629
+Agentcis_(2) Australian Education - Onshore          COE Received   open  2026-02-18 2TtgRayF4HW3V71FugVG
+                  Agentcis (2) Onshore Visa          Visa Granted    won  2026-02-17 p517lRT3CpzNOwNEct8c
+  [SAME-PIPELINE DUPLICATE] {'Agentcis_(2) Australian Education - Onshore': np.int64(5), 'CLT - Admissions Sub-Applications': np.int64(2), 'CLT - Onshore Admission': np.int64(2), 'L2C - Education': np.int64(2)}
+
+--- kaleemullahbhutta10@gmail.com (13 opps) ---
+                                   pipeline                 stage status opp_created       opportunity_id
+                                   Accounts     Send Payment Plan   open  2026-05-12 ehOKZkrvF2RRITk5OS0d
+                    CLT - Onshore Admission          COE Received   open  2026-05-08 yjTY8OXnX6PgqYvkSyV7
+                                 CLT - VISA       To be Submitted   open  2026-05-07 C2MsHzbAoH2hvLyyugtV
+                            L2C - Education          COE Received   open  2026-04-08 6o0QcrACd918bSlpydFJ
+Agentcis_(2) Australian Education - Onshore Application Initiated   lost  2026-02-18 CPp9LYlgsC3v7kXZkm6p
+Agentcis_(2) Australian Education - Onshore Application Initiated   lost  2026-02-18 Hip2dVzWUbmkD3tPtYKB
+Agentcis_(2) Australian Education - Onshore          COE Received   open  2026-02-18 TQ3UxmJZOuwy794urOdb
+Agentcis_(2) Australian Education - Onshore          Offer Letter   lost  2026-02-18 ZjdA4EECnJEdQ27BRdvT
+Agentcis_(2) Australian Education - Onshore Application Initiated   open  2026-02-18 SjhwVFwuWQOUQmoGj3bc
+Agentcis_(2) Australian Education - Onshore Application Initiated   open  2026-02-18 pussmQ1SvLca4glVKKH4
+                  Agentcis_Skill Assessment               Outcome    won  2026-02-17 hUs4hJddT97VbZyzkyoE
+                  Agentcis (2) Onshore Visa          Visa Granted    won  2026-02-17 DMrx5zjambXkHcNMWq1x
+                    CLT - Onshore Admission          COE Received   open  2026-01-14 35N6tXN3sgfMKD4SvKL5
+  [SAME-PIPELINE DUPLICATE] {'Agentcis_(2) Australian Education - Onshore': np.int64(6), 'CLT - Onshore Admission': np.int64(2)}
+
+--- ihsankhan2662@gmail.com (9 opps) ---
+                         pipeline                   stage status opp_created       opportunity_id
+                         Accounts       Send Payment Plan   open  2026-05-14 V4iHvSLXLGQ3Hh4UyHGm
+                  L2C - Education            COE Received   open  2026-05-14 MTfwcZEq2ENUpWqhYrrz
+          CLT - Onshore Admission            COE Received   open  2026-05-14 4CJHKXPNiJKXV6GzTFq7
+                         Accounts       Send Payment Plan   open  2026-05-14 SuIdlaN01D3wj5cduRXs
+CLT - Admissions Sub-Applications   Offer Letter Received   open  2026-05-12 hpWiWXSi3xZh7baqAONi
+          CLT - Onshore Admission            COE Received   open  2026-05-12 tMH4Lglzl7Rryf61Ov4S
+                       L2C - VISA MARA Appointment Booked   open  2026-05-12 KGFb7PnDOI2ZQap1A0EE
+                       L2C - VISA       Post Consultation   open  2026-05-11 LrCdBrtLIf6WrFIVoZ3f
+        Agentcis (2) Onshore Visa    Waiting for decision   open  2026-02-17 nCyh6CeKkO8p6DsR96n1
+  [SAME-PIPELINE DUPLICATE] {'Accounts': np.int64(2), 'CLT - Onshore Admission': np.int64(2), 'L2C - VISA': np.int64(2)}
+
+--- ahsanzaib51214@gmail.com (8 opps) ---
+                                   pipeline                   stage status opp_created       opportunity_id
+                                 L2C - VISA MARA Appointment Booked   open  2026-05-11 ZP68TRhDAZHVGiWlc2XT
+                                 L2C - VISA       Post Consultation   open  2026-05-11 HKO8Qwe2lVnUGKrqouw1
+                            L2C - Education       Post Consultation   open  2026-05-11 MxxjnsBcLr7MUN1SPcyH
+Agentcis_(2) Australian Education - Onshore   Application Initiated   open  2026-02-18 7PPsFwl1Zd1pfUHip37g
+Agentcis_(2) Australian Education - Onshore   Application Initiated   lost  2026-02-18 fA9ol5SP75C8ZwXvWu7s
+Agentcis_(2) Australian Education - Onshore   Application Initiated   open  2026-02-18 ScYvK0BgxCwT6qZHOY3Z
+Agentcis_(2) Australian Education - Onshore            COE Received   open  2026-02-18 IWroGInBTvfC5WBuhqll
+                  Agentcis (2) Onshore Visa            Visa Granted    won  2026-02-17 xstg1gEjHmGjQM6agf8Z
+  [SAME-PIPELINE DUPLICATE] {'Agentcis_(2) Australian Education - Onshore': np.int64(4), 'L2C - VISA': np.int64(2)}
+
+--- usmanchadhar222@icloud.com (8 opps) ---
+                                   pipeline                 stage status opp_created       opportunity_id
+                    CLT - Onshore Admission     Requested for COE   open  2026-05-12 Go3eNNaZwjh5V77BEpfc
+                            L2C - Education      Initial Received    won  2026-04-08 IUsw20engZxnkOUNKABj
+Agentcis_(2) Australian Education - Onshore Application Initiated   lost  2026-02-18 iYuTlVDH58i3NVaYegml
+Agentcis_(2) Australian Education - Onshore          COE Received   open  2026-02-18 EzWnfwYpYcKogQFA7pFL
+Agentcis_(2) Australian Education - Onshore Application Initiated   lost  2026-02-18 iVQuIYG4SM17nHl0TcYt
+Agentcis_(2) Australian Education - Onshore          COE Received   open  2026-02-18 iUv6oXa7fgB2PYXCvBMX
+                  Agentcis (2) Onshore Visa Application Submitted   open  2026-02-17 ICXXTWD78OBmm8wmEGwz
+                    CLT - Onshore Admission          COE Received   open  2026-01-14 99BNLmSHvmGmRM3NvxIK
+  [SAME-PIPELINE DUPLICATE] {'Agentcis_(2) Australian Education - Onshore': np.int64(4), 'CLT - Onshore Admission': np.int64(2)}
+
+--- ehsansunny5666@gmail.com (7 opps) ---
+                                   pipeline             stage status opp_created       opportunity_id
+                                   Accounts Send Payment Plan   open  2026-05-19 Vd4EZZPQcGbqgzCFutRX
+                    CLT - Onshore Admission      COE Received   open  2026-05-18 yobTG7y8RUyJsaQNLRBN
+                            L2C - Education      COE Received   open  2026-04-08 buN3cE00hJjDugtudNdG
+Agentcis_(2) Australian Education - Onshore      COE Received   open  2026-02-18 fCf960ekGsVEblx7H5hr
+Agentcis_(2) Australian Education - Onshore      COE Received   open  2026-02-18 HRppZtykhRZuxaz7Q8fl
+Agentcis_(2) Australian Education - Onshore      COE Received   open  2026-02-18 Qwmh8ja78gEwgexpibCP
+                    CLT - Onshore Admission      COE Received   open  2026-01-14 U3lsj09xDjY5BByMGpW8
+  [SAME-PIPELINE DUPLICATE] {'Agentcis_(2) Australian Education - Onshore': np.int64(3), 'CLT - Onshore Admission': np.int64(2)}
+
+--- maazbinkaleem@gmail.com (7 opps) ---
+                                   pipeline                    stage status opp_created       opportunity_id
+                                 L2C - VISA  MARA Appointment Booked   open  2026-05-21 8CR2fXOArGNhBeMDFHDk
+                                 L2C - VISA        Post Consultation   open  2026-05-21 Duw5E09TOwKeB7llzq0z
+                                 L2C - VISA        Post Consultation   open  2026-05-21 mxBI6LXwgCA3qckWBVLx
+Agentcis_(2) Australian Education - Onshore    Application Initiated   lost  2026-02-18 4Ub77FRjg6UhgKnANkKp
+Agentcis_(2) Australian Education - Onshore             Payment Plan   open  2026-02-18 UK7H50zhvj6K9WIBrLC6
+                  Agentcis (2) Onshore Visa Application draft review   open  2026-02-17 vt5ygIugufclWTvP4Gpt
+                  Agentcis (2) Onshore Visa             Visa Granted    won  2026-02-17 aYlwJiOxnjfHIj3snToo
+  [SAME-PIPELINE DUPLICATE] {'Agentcis (2) Onshore Visa': np.int64(2), 'Agentcis_(2) Australian Education - Onshore': np.int64(2), 'L2C - VISA': np.int64(3)}
+
+--- tehseenshah36@gmail.com (7 opps) ---
+                         pipeline                     stage status opp_created       opportunity_id
+                       CLT - VISA F-956 + Serv. Agmnt + H&C   open  2026-05-26 uaISbA91G1NJXSPdCNcx
+CLT - Admissions Sub-Applications    Create Sub-Application   open  2026-05-12 U69lRpn8J7MTikC7We7y
+                       L2C - VISA   MARA Appointment Booked   open  2026-01-19 PQoruX7uTNVneNRY9FZz
+          CLT - Onshore Admission         Requested for COE   open  2026-01-14 fyTkOr96qaZCcN9GYxHC
+             Lead to Consultation          Initial Received   open  2025-10-21 Zp4KVuV3JbrqhCRS9lny
+               Education_Pipeline             Pre Sales (1)   open  2025-10-18 VaDObrDO8O8vyrQ6Xyy2
+             Lead to Consultation    Assigned to Consultant   open  2025-10-18 kQHSpkCSTeQvn2QS7QAK
+  [SAME-PIPELINE DUPLICATE] {'Lead to Consultation': np.int64(2)}
+
+--- nabeel.auth@gmail.com (7 opps) ---
+               pipeline                   stage status opp_created       opportunity_id
+        L2C - Education            COE Received   open  2026-05-21 FTXz3osvcjZcRigfP0W7
+               Accounts               Invoicing   open  2026-05-21 EWDLJOySgHSrg5m9100s
+CLT - Onshore Admission            COE Received   open  2026-05-21 MPpu7gzb9voV1oQijIKk
+CLT - Onshore Admission    COE Payment Received   open  2026-05-18 19mZVcDhnfGdfaOVAC5v
+             L2C - VISA MARA Appointment Booked   open  2026-05-06 qg7fUpTfqxWQl6aWVgLG
+             L2C - VISA       Post Consultation   open  2026-04-28 4SkNQ3csu4lZj7H57mgl
+  L2C - Skill Migration     Consultation Booked   open  2026-04-28 X30asUjWRVL71O89wTXK
+  [SAME-PIPELINE DUPLICATE] {'CLT - Onshore Admission': np.int64(2), 'L2C - VISA': np.int64(2)}
+
+--- hussainsyed1412@gmail.com (7 opps) ---
+               pipeline                   stage status opp_created       opportunity_id
+               Accounts       Send Payment Plan   open  2026-05-13 IFkDVqfITh8AnEiq8QQr
+CLT - Onshore Admission            COE Received   open  2026-05-13 8TTXvjbxjxcAvdhyv95z
+             L2C - VISA MARA Appointment Booked   open  2026-04-29 FaheMiwTuIE38OcBWNum
+             L2C - VISA       Post Consultation   open  2026-04-22 zIUUlA0KhmZbXvha2pgA
+        L2C - Education            COE Received   open  2026-04-20 cq1G5dIPPqVvR6nP6aBb
+             L2C - VISA       Post Consultation   open  2026-04-17 DH2slHBIP3GI3Lzu5a55
+             L2C - VISA       Post Consultation   open  2026-04-16 viFUPrODvgODnujVa33c
+  [SAME-PIPELINE DUPLICATE] {'L2C - VISA': np.int64(4)}
+
+--- navi.tung007@gmail.com (6 opps) ---
+               pipeline                           stage status opp_created       opportunity_id
+        L2C - Education                    COE Received   open  2026-05-22 bieGUAjybSqNU2eJgkuG
+               Accounts               Send Payment Plan   open  2026-05-22 EBSTtUFXPP6jmsTb6Q6R
+CLT - Onshore Admission                    COE Received   open  2026-05-20 ZZLak4gT0tjHacHiRFBL
+             L2C - VISA         MARA Appointment Booked   open  2026-05-18 Iq4T5gK8jJBsckCKvDMI
+             L2C - VISA               Post Consultation   open  2026-05-05 gSCMV7IsZEYmEn7f80wR
+  L2C - Skill Migration New Lead / Assigned to Nurturer   lost  2026-02-13 H3HUill6TXf3WMOSzqYO
+  [SAME-PIPELINE DUPLICATE] {'L2C - VISA': np.int64(2)}
+
+--- alih77200@gmail.com (6 opps) ---
+               pipeline                     stage status opp_created       opportunity_id
+               Accounts         Send Payment Plan   open  2026-05-15 K8Zlv0j5dwZlRF9iFPin
+               Accounts         Send Payment Plan   open  2026-05-15 wYHznJ1mWt7SXilLRRbb
+CLT - Onshore Admission              COE Received   open  2026-05-15 uoghZKGZWBba1fV6mwqa
+CLT - Onshore Admission              COE Received   open  2026-05-15 w3Sdcx050vulgfRdKius
+             CLT - VISA Acknowledgment Sent + Doc   open  2026-04-28 rXNuh2xRnDcY1hjSHG7C
+        L2C - Education              COE Received   open  2026-04-28 DsKvN3COzPJVxlXfTe1T
+  [SAME-PIPELINE DUPLICATE] {'Accounts': np.int64(2), 'CLT - Onshore Admission': np.int64(2)}
+
+--- sherazgujjar1555@gmail.com (6 opps) ---
+                                   pipeline                                              stage status opp_created       opportunity_id
+                    CLT - Onshore Admission                                  Requested for COE   open  2026-05-18 impA9k7OJNFiVvL0tVj2
+Agentcis_(2) Australian Education - Onshore                                Offer Letter Review   lost  2026-02-18 eEyErpJQk7FLjUwH22Mj
+Agentcis_(2) Australian Education - Onshore                                       COE Received   open  2026-02-18 SWLxoAd34xmXyoudslpK
+Agentcis_(2) Australian Education - Onshore                                       Offer Letter   lost  2026-02-18 zQ9ESBpAyX8CNlKph8ub
+                  Agentcis (2) Onshore Visa Consumer Guide, Client Testimonial and Information   open  2026-02-17 Bw7qL7ZpHyBEAeB9zcsW
+                  Agentcis (2) Onshore Visa                           Application draft review   open  2026-02-17 97axqWGF7rlS5xTFAmSk
+  [SAME-PIPELINE DUPLICATE] {'Agentcis (2) Onshore Visa': np.int64(2), 'Agentcis_(2) Australian Education - Onshore': np.int64(3)}
+
+--- zainmuhammad626@gmail.com (5 opps) ---
+                 pipeline                     stage status opp_created       opportunity_id
+                 Accounts         Send Payment Plan   open  2026-05-13 8mi3x16ueyNSihA4eLzf
+  CLT - Onshore Admission              COE Received   open  2026-05-13 YdhEZ6Ucc3CZnviCtaXQ
+               CLT - VISA Acknowledgment Sent + Doc    won  2026-05-11 RXO6B84WGKsqpI5dFZ7F
+          L2C - Education              COE Received   open  2026-04-28 7Xm1tRm4TQty78NlRbLy
+Agentcis (2) Onshore Visa  Application draft review   open  2026-02-17 x4aDiqbru0CQdJ9sRY2b
+
+--- nomihassan82@gmail.com (4 opps) ---
+                         pipeline                   stage status opp_created       opportunity_id
+          CLT - Onshore Admission      COE Invoice Shared   open  2026-05-13 nLbCz9HDvJM1lbfhJeqR
+                       CLT - VISA   Application Submitted   open  2026-03-31 VENUDSPgHaI7woK2KEnc
+                       L2C - VISA MARA Appointment Booked   open  2026-02-18 fLhyA2CsOjaz3rUdNL7e
+Temporary Post Consultation Leads          Client Replied   open  2026-02-18 991SgeXQM0SfUd4s2b1S
+
+--- ajamesfelix.work@gmail.com (4 opps) ---
+               pipeline                     stage status opp_created       opportunity_id
+             CLT - VISA F-956 + Serv. Agmnt + H&C   open  2026-05-21 pPcSYamsz3XSrXvNB1pU
+               Accounts         Send Payment Plan   open  2026-05-07 mDJLu9fISANi8s328Wpf
+CLT - Onshore Admission              COE Received   open  2026-05-05 dUAR6zk5PhguKWPytanC
+        L2C - Education              COE Received   open  2026-05-05 SWhTGNWEJl8cJIygKy9Y
+
+--- sardar1232018@gmail.com (4 opps) ---
+               pipeline                     stage status opp_created       opportunity_id
+CLT - Onshore Admission        COE Invoice Shared   open  2026-05-12 TOUfqHnTKj19FgpODnda
+        L2C - Education                   No Show   open  2026-04-25 LS5971P0fTkLUzEn0F9F
+CLT - Onshore Admission        COE Invoice Shared   open  2026-04-24 2JNWe7OcG06PF8lWsdZj
+             CLT - VISA Acknowledgment Sent + Doc   open  2026-04-24 NMdoc45EJ5fUALTpVJFv
+  [SAME-PIPELINE DUPLICATE] {'CLT - Onshore Admission': np.int64(2)}
+
+--- mehran123123@gmail.com (3 opps) ---
+               pipeline             stage status opp_created       opportunity_id
+        L2C - Education      COE Received   open  2026-05-05 MUJ7JXAHOP3jLZDVfhJK
+               Accounts Send Payment Plan   open  2026-05-05 plTXQjMg5IYJO2yjVEdh
+CLT - Onshore Admission      COE Received   open  2026-05-04 4UOKqP5Y5GV7HjJTQEMC
+
+--- homaayoonhassan0480@gmail.com (3 opps) ---
+               pipeline             stage status opp_created       opportunity_id
+        L2C - Education      COE Received   open  2026-05-11 fVE3y9lkCXQh1aQTqcMp
+               Accounts Send Payment Plan   open  2026-05-11 i0twYhsBKpzbdLxoPZRD
+CLT - Onshore Admission      COE Received   open  2026-05-08 ePUJnmTRxP9J93MMMst8
+
+--- usamakalyar6071@gmail.com (3 opps) ---
+               pipeline             stage status opp_created       opportunity_id
+        L2C - Education      COE Received   open  2026-05-08 prknj83ZxLwE3y37UY1U
+               Accounts Send Payment Plan   open  2026-05-08 ocZtdwf8eWz8kXE9BIO6
+CLT - Onshore Admission      COE Received   open  2026-05-06 bdydvO07cRz9aS3bkxkw
+
+--- nodirmaksudov@gmail.com (3 opps) ---
+               pipeline             stage status opp_created       opportunity_id
+               Accounts Send Payment Plan   open  2026-05-08 tXNbHEgtWq1jYhY6NFfm
+CLT - Onshore Admission      COE Received   open  2026-05-08 19350bT5SWsCwlh6SX1E
+        L2C - Education      COE Received   open  2026-04-30 k4DG6S3FxdckxZsHiPnL
+
+--- jawadali224400@gmail.com (3 opps) ---
+               pipeline             stage status opp_created       opportunity_id
+               Accounts Send Payment Plan   open  2026-05-07 tieefSGJzX5D2xyGiy64
+CLT - Onshore Admission      COE Received   open  2026-05-06 Gu85LDpn0szzjShWMDGp
+        L2C - Education      COE Received   open  2026-05-05 1HaWeLWIXtVJilR9nW4q
+
+--- ukatyal4@gmail.com (3 opps) ---
+               pipeline             stage status opp_created       opportunity_id
+        L2C - Education      COE Received   open  2026-05-15 wgvwmobeFVe655SAbCUh
+               Accounts Send Payment Plan   open  2026-05-15 wPIpCnFfTV9zkS0xE4UN
+CLT - Onshore Admission      COE Received   open  2026-04-06 KqDQMU0lbuol2BvlDMTa
+
+--- mianabrar0336@gmail.com (3 opps) ---
+                 pipeline                                              stage status opp_created       opportunity_id
+  CLT - Onshore Admission                                 COE Invoice Shared   open  2026-05-18 WP1tdLnC90HQcb4LsmHh
+Agentcis (2) Onshore Visa                           Application draft review   open  2026-02-17 kwBRZ2VkB8kus8IXvSjL
+Agentcis (2) Onshore Visa Consumer Guide, Client Testimonial and Information   open  2026-02-17 fSv9bBscKcqM8k5ky5jV
+  [SAME-PIPELINE DUPLICATE] {'Agentcis (2) Onshore Visa': np.int64(2)}
+
+--- asadbekuzb2008@gmail.com (2 opps) ---
+       pipeline             stage status opp_created       opportunity_id
+L2C - Education Post Consultation   open  2026-04-29 4C3sH4aIh58ah8pDob4l
+L2C - Education Post Consultation   open  2026-04-28 5AIp895YAp6PLYkX8ABs
+  [SAME-PIPELINE DUPLICATE] {'L2C - Education': np.int64(2)}
+
+--- farooqrasheed25@gmail.com (2 opps) ---
+               pipeline                stage status opp_created       opportunity_id
+CLT - Onshore Admission COE Payment Received   open  2026-05-11 yBWM7UmoPOYREZeijsJz
+        L2C - Education    Post Consultation   open  2026-03-08 88zC2N4UW7KgP7gLcKOc
+
+--- hassansohail20@gmail.com (2 opps) ---
+  pipeline                   stage status opp_created       opportunity_id
+L2C - VISA MARA Appointment Booked   open  2026-05-18 yY2ANgsyrbFpHhzlSFVi
+L2C - VISA       Post Consultation   open  2026-05-17 mUkn4zNukL3Yt480l6sd
+  [SAME-PIPELINE DUPLICATE] {'L2C - VISA': np.int64(2)}
+
+--- mohsinraza3324090@gmail.com (2 opps) ---
+  pipeline                   stage status opp_created       opportunity_id
+L2C - VISA MARA Appointment Booked   open  2026-05-07 ZyFjaVSeUYqHO677ZdPq
+L2C - VISA       Post Consultation   open  2026-05-01 jOCCDCkjnLQNS6Jr8dBn
+  [SAME-PIPELINE DUPLICATE] {'L2C - VISA': np.int64(2)}
+
+--- mahal20kj@gmail.com (2 opps) ---
+                         pipeline                   stage status opp_created       opportunity_id
+                       L2C - VISA MARA Appointment Booked   open  2026-02-19 efl1T8csbqmIqcKczuTr
+Temporary Post Consultation Leads          Client Replied   open  2026-02-13 3rSwMVqxJSPq84AcHW47
+
