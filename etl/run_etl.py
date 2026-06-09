@@ -29,6 +29,14 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+# Load the project .env early so MOTHERDUCK_TOKEN (and API keys) are available
+# before init_database() decides where to write.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(ROOT.parent / ".env")
+except Exception:
+    pass
+
 from connectors import ga4, ghl, gsc, meta  # noqa: E402
 from etl import normalize  # noqa: E402
 
@@ -45,6 +53,15 @@ logger = logging.getLogger("etl")
 # ---------------------------------------------------------------------
 
 def init_database() -> duckdb.DuckDBPyConnection:
+    # If a MotherDuck token is present, write to the shared cloud DB (so the
+    # deployed + local dashboards refresh together). Otherwise the local file.
+    md = os.getenv("MOTHERDUCK_TOKEN")
+    if md:
+        dbname = os.getenv("MOTHERDUCK_DATABASE", "migration")
+        con = duckdb.connect(f"md:{dbname}?motherduck_token={md}")
+        con.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
+        logger.info("DB initialized on MotherDuck (%s)", dbname)
+        return con
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(DB_PATH))
     con.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
