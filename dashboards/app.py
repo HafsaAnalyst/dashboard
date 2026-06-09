@@ -3654,11 +3654,17 @@ def render_meta1_tab():
             f"Funnel strengthening end-to-end: booking rate {d_br:+.0f} pts and show rate {d_shr:+.0f} pts."))
 
     # ---- cost efficiency ----
+    # Show the working: spend ÷ bookings and the two date windows being compared.
+    def _d(_x): return f"{_x.strftime('%b')} {_x.day}"
+    _dr = f"{_d(since)}–{_d(until)} vs {_d(prior_since)}–{_d(prior_until)}"
+    _cpa_calc = (f"${C['spend']:,.0f} ÷ {int(C['booked'])} "
+                 f"booking{'s' if C['booked'] != 1 else ''}")
     if dl_cpa is not None and dl_cpa < -5:
-        ins.append(("good", f"**Cheaper appointments.** CPA fell {abs(dl_cpa):.0f}% to **${cpa:,.0f}** — "
-                            "each booking costs less even if leads are down."))
+        ins.append(("good", f"**Cheaper appointments.** CPA fell {abs(dl_cpa):.0f}% to **${cpa:,.0f}** "
+                            f"({_cpa_calc}, {_dr}) — each booking costs less even if leads are down."))
     elif dl_cpa is not None and dl_cpa > 5:
-        ins.append(("warn", f"**Pricier appointments.** CPA rose {dl_cpa:.0f}% to **${cpa:,.0f}**."))
+        ins.append(("warn", f"**Pricier appointments.** CPA rose {dl_cpa:.0f}% to **${cpa:,.0f}** "
+                            f"({_cpa_calc}, {_dr})."))
     if dl_spend is not None and dl_leads is not None and dl_spend > 5 and dl_leads < -5:
         ins.append(("warn", f"Spend up {dl_spend:.0f}% while leads fell {abs(dl_leads):.0f}% — "
                             f"CPL rose to **${cpl:,.0f}**. Check for fatigue / rising auction costs."))
