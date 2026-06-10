@@ -1751,14 +1751,16 @@ cohort AS (
     LEFT JOIN last_sub s ON s.contact_id = c.contact_id
     LEFT JOIN appt_in_range air ON air.contact_id = c.contact_id
     -- exclude the Instagram AI auto-responder contact (AI-generated messages)
+    -- and our own agency staff accounts (@themigration.com.au) — not leads.
     WHERE LOWER(TRIM(COALESCE(c.contact_name, ''))) NOT IN ('insta user', 'insta ai')
+      AND LOWER(COALESCE(c.email, '')) NOT LIKE '%@themigration.com.au'
       AND (CAST(c.date_added + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
        OR CAST(s.last_sub  + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
        OR air.contact_id IS NOT NULL)
 ),
 chan AS (
-    SELECT contact_id, channel FROM (
-        SELECT contact_id, channel,
+    SELECT contact_id, channel, last_message_type FROM (
+        SELECT contact_id, channel, last_message_type,
                ROW_NUMBER() OVER (PARTITION BY contact_id ORDER BY
                    CASE channel WHEN 'Facebook' THEN 1 WHEN 'Instagram' THEN 2
                                 WHEN 'WhatsApp' THEN 3 WHEN 'TikTok' THEN 4 ELSE 9 END,
@@ -1965,7 +1967,9 @@ SELECT
         WHEN lo.pipeline_name LIKE 'Agentcis%'                                      THEN 'Unknown'
         -- 4) a real inbound conversation channel with no tracked marketing source
         -- becomes a channel-named source (grouped under Executive 'Others').
-        WHEN cc.channel = 'Phone/SMS'                                               THEN 'Phone/SMS'
+        -- Phone/SMS splits into Direct call (phone) vs SMS by last message type.
+        WHEN cc.channel = 'Phone/SMS' AND cc.last_message_type = 'TYPE_SMS'         THEN 'SMS'
+        WHEN cc.channel = 'Phone/SMS'                                               THEN 'Direct call'
         WHEN cc.channel = 'Web Chat'                                                THEN 'Web Chat'
         WHEN cc.channel = 'Email'                                                   THEN 'Email'
         ELSE 'Unknown'

@@ -1929,7 +1929,7 @@ The **Counsellors** tab tracks utilisation, outcomes, and paid revenue for each 
 - "Others" and "Unidentified" don't apply to counsellor offices, so they're treated as "All" on this tab.
 
 ### 🧬 Source — drill-down column logic
-The drill-down tables now show **Source** (the same `refined_source` classification as **Executive_1** — Paid Social / Social media / Referral / Organic Search / Direct / Walk-in / Phone/SMS / Web Chat / Email / Queries / etc.), the granular **Platform** (social platform, social sources only), and the **Lead Created Date**. These replace the old live-computed "Latest Source" column. The classification is joined by `contact_id` from `vw_exec1_lead_detail` over a wide window so every appointment contact is covered.
+The drill-down tables now show **Source** (the same `refined_source` classification as **Executive_1** — Paid Social / Social media / Referral / Organic Search / Direct / Walk-in / Direct call / SMS / Web Chat / Email / Queries / etc.), the granular **Platform** (social platform, social sources only), and the **Lead Created Date**. These replace the old live-computed "Latest Source" column. The classification is joined by `contact_id` from `vw_exec1_lead_detail` over a wide window so every appointment contact is covered.
 
 ### 🖱️ Interactivity
 - **Top 6 scorecards** — click an inactive scorecard → highlights it + changes the unified trend chart / table below; click the already-active scorecard again → opens the drill-down modal.
@@ -5179,10 +5179,10 @@ with tab_e1:
                     "#15803d" if up else "#dc2626")
 
         # ---- master by-source summary (drives the per-card summary tables) ----
-        # Walk-in / Agentcis / Unknown plus the channel-named sources (Phone/SMS,
+        # Walk-in / Agentcis / Unknown plus the channel-named sources (Direct call, SMS,
         # Web Chat, Email) are grouped under one "Others" umbrella in the by-source
         # tables; the granular value stays on e1 for the drill-down.
-        OTHERS_SUB = ["Walk-in", "Agentcis", "Unknown", "Phone/SMS", "Web Chat", "Email"]
+        OTHERS_SUB = ["Walk-in", "Agentcis", "Unknown", "Direct call", "SMS", "Web Chat", "Email"]
         e1["src_group"] = e1["refined_source"].where(
             ~e1["refined_source"].isin(OTHERS_SUB), "Others")
         src = (e1.groupby("src_group")
@@ -5419,8 +5419,8 @@ with tab_e1:
                                "Widen the date filter for a longer history.")
 
                 if picked == "Others":
-                    st.markdown("**Others — breakdown** (Walk-in · Agentcis · Phone/SMS · "
-                                "Web Chat · Email · Unknown — click a row)")
+                    st.markdown("**Others — breakdown** (Walk-in · Agentcis · Direct call · "
+                                "SMS · Web Chat · Email · Unknown — click a row)")
                     base, ttl = _nested(e1[e1["src_group"] == "Others"], "refined_source",
                                         "Sub-source", "e1_others_sel",
                                         prior_df=(e1p[e1p["refined_source"].isin(OTHERS_SUB)]
