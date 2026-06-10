@@ -3168,6 +3168,18 @@ def render_meta1_tab():
     camp_acct = dict(zip(m_cur["_k"], m_cur["account"])) if not m_cur.empty else {}
     meta_keys = set(m_cur["_k"]) if not m_cur.empty else set()
     meta_keys_p = set(m_pri["_k"]) if not m_pri.empty else set()
+    # All-time campaign → city (Melbourne / Sydney) from the warehouse, so a lead
+    # whose campaign didn't deliver in THIS window is still attributed to its ad
+    # account. account_label is already 'Melbourne' / 'Sydney'.
+    try:
+        _cc_rows = get_con().execute(
+            "SELECT DISTINCT campaign_name, account_label FROM ("
+            "  SELECT campaign_name, account_label FROM fact_meta_daily "
+            "  UNION ALL SELECT campaign_name, account_label FROM fact_meta_insights) "
+            "WHERE COALESCE(campaign_name,'') <> ''").fetchall()
+        camp_city = {_ckey(n): lbl for n, lbl in _cc_rows if lbl}
+    except Exception:
+        camp_city = {}
 
     def _ps(df, cids, mkeys=None):
         # Meta cohort = exactly Executive_1's Paid Social (the view now classifies
@@ -3176,7 +3188,10 @@ def render_meta1_tab():
         d["campaign"] = d["campaign"].fillna("(no campaign)").replace("", "(no campaign)")
         d["_k"] = d["campaign"].map(_ckey)
         d["is_conv"] = d["contact_id"].isin(cids).astype(int)
-        d["account"] = d["_k"].map(camp_acct).fillna("—")
+        # city from the campaign's ad account: all-time warehouse map first
+        # (covers campaigns not delivering this window), then the live map.
+        d["account"] = (d["_k"].map(camp_city)
+                        .fillna(d["_k"].map(camp_acct)).fillna("—"))
         return d
     ps, psp = _ps(e1, conv_ids), _ps(e1p, conv_ids_p)
 
