@@ -2,8 +2,8 @@
 # Excludes streamlit/altair/prophet/matplotlib — the ETL doesn't need them,
 # and skipping prophet/cmdstanpy keeps the cron run fast and reliable.
 duckdb==1.5.3
-pandas
-numpy
+pandas==3.0.3
+numpy==2.4.6
 requests
 PyYAML
 python-dotenv

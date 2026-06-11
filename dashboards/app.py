@@ -820,31 +820,38 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
                    for c in COUNSELLORS for cid in c["calendar_ids"]}
     cal_to_name = {cid: c["name"].split(" - ")[0]
                    for c in COUNSELLORS for cid in c["calendar_ids"]}
-    if not daily_df.empty:
+    if not daily_df.empty and {"calendar_id", "date"}.issubset(daily_df.columns):
         daily_df["counsellor_city"] = daily_df["calendar_id"].map(cal_to_city)
         daily_df = daily_df.dropna(subset=["counsellor_city"])
         daily_df["date"] = pd.to_datetime(daily_df["date"])
+    else:
+        daily_df = pd.DataFrame()
 
     # Per-appointment detail — drives the scorecard drill-down email lists.
     appt_detail = run_df("vw_counsellor_appointments_detail",
                          {"since": since.isoformat(),
                           "until": until.isoformat()})
-    if not appt_detail.empty:
+    if not appt_detail.empty and "calendar_id" in appt_detail.columns:
         appt_detail["counsellor_city"] = appt_detail["calendar_id"].map(cal_to_city)
         appt_detail["counsellor"]      = appt_detail["calendar_id"].map(cal_to_name)
         # Drop calendars not in our active counsellor list (excluded counsellors).
         appt_detail = appt_detail.dropna(subset=["counsellor_city"])
+    else:
+        appt_detail = pd.DataFrame()
 
     # Executive_1 source classification, keyed by contact_id over a wide window so
     # every appointment contact is covered — drives the Source / Platform /
     # Lead Created Date columns in the drill-down tables (replaces 'Latest Source').
     _csrc = run_df("vw_exec1_lead_detail", {"since": "2024-01-01", "until": until.isoformat()})
-    _src_map   = dict(zip(_csrc["contact_id"], _csrc["refined_source"]))   if not _csrc.empty else {}
-    _plat_map  = dict(zip(_csrc["contact_id"], _csrc["social_platform"]))  if not _csrc.empty else {}
-    _ldt_map   = dict(zip(_csrc["contact_id"], _csrc["lead_date"]))        if not _csrc.empty else {}
-    _email_map = dict(zip(_csrc["contact_id"], _csrc["email"]))            if not _csrc.empty else {}
-    _pipe_map  = dict(zip(_csrc["contact_id"], _csrc["pipeline"]))         if not _csrc.empty else {}
-    _stage_map = dict(zip(_csrc["contact_id"], _csrc["stage"]))            if not _csrc.empty else {}
+    _csrc_ok = (not _csrc.empty and {"contact_id", "refined_source", "social_platform",
+                                     "lead_date", "email", "pipeline", "stage"}
+                .issubset(_csrc.columns))
+    _src_map   = dict(zip(_csrc["contact_id"], _csrc["refined_source"]))   if _csrc_ok else {}
+    _plat_map  = dict(zip(_csrc["contact_id"], _csrc["social_platform"]))  if _csrc_ok else {}
+    _ldt_map   = dict(zip(_csrc["contact_id"], _csrc["lead_date"]))        if _csrc_ok else {}
+    _email_map = dict(zip(_csrc["contact_id"], _csrc["email"]))            if _csrc_ok else {}
+    _pipe_map  = dict(zip(_csrc["contact_id"], _csrc["pipeline"]))         if _csrc_ok else {}
+    _stage_map = dict(zip(_csrc["contact_id"], _csrc["stage"]))            if _csrc_ok else {}
     # actual calendar name (e.g. "Nasir Nawaz - MARA Certified - Online")
     _cal_name_map = dict(get_con().execute(
         "SELECT calendar_id, calendar_name FROM dim_calendars").fetchall())
@@ -868,12 +875,12 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
     pay_df = run_df("vw_counsellor_payments",
                     {"since": since.isoformat(), "until": until.isoformat()})
     pay_by_cal = {row["calendar_id"]: row for _, row in pay_df.iterrows()} \
-                  if not pay_df.empty else {}
+                  if (not pay_df.empty and "calendar_id" in pay_df.columns) else {}
     pay_df_pri = run_df("vw_counsellor_payments",
                         {"since": prior_since.isoformat(),
                          "until": prior_until.isoformat()})
     pay_by_cal_pri = {row["calendar_id"]: row for _, row in pay_df_pri.iterrows()} \
-                      if not pay_df_pri.empty else {}
+                      if (not pay_df_pri.empty and "calendar_id" in pay_df_pri.columns) else {}
 
     # Per-calendar conversion counts (booked + converted contacts).
     # Converted = contact has at least one opp in:
@@ -881,7 +888,8 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
     #   - L2C-VISA MARA Appointment Booked (VOE-converted)
     conv_df = run_df("vw_counsellor_conversions",
                      {"since": since.isoformat(), "until": until.isoformat()})
-    if not conv_df.empty:
+    if not conv_df.empty and {"calendar_id", "booked_contacts",
+                              "converted_contacts"}.issubset(conv_df.columns):
         conv_df["counsellor"] = conv_df["calendar_id"].map(cal_to_name)
         conv_df = conv_df.dropna(subset=["counsellor"])
         conv_by_counsellor = conv_df.groupby("counsellor").agg(
@@ -894,7 +902,10 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
     # Historical show-rate benchmark (75th percentile across all active
     # counsellor calendars, last 90 days, weekday appointments only).
     bench_df = run_df("vw_counsellor_show_rate_90d", {})
-    if not bench_df.empty:
+    # Guard the column set: this runs at module scope, so a malformed result
+    # would crash EVERY tab. Degrade to "no benchmark" rather than take the app
+    # down if the expected columns aren't present.
+    if not bench_df.empty and {"calendar_id", "appts_90d", "showed_90d"}.issubset(bench_df.columns):
         bench_df["counsellor_city"] = bench_df["calendar_id"].map(cal_to_city)
         bench_df = bench_df.dropna(subset=["counsellor_city"])
         # Aggregate per counsellor across their calendars (some counsellors

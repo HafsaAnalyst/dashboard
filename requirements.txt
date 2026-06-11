@@ -1,13 +1,16 @@
 # Python packages for the dashboard + ETL.
-# Deploy target: Python 3.13 (Streamlit Community Cloud — NOT 3.14).
-# Versions left loose on purpose so they resolve on 3.13.
+# Core data/UI stack is PINNED to the exact versions verified locally (on
+# Python 3.14): leaving them loose let Streamlit Cloud resolve different
+# pandas/pyarrow builds, which returned query results with missing columns and
+# crashed the Counsellors tab. Keep these in sync with the local .venv.
 
 # --- core app ---
-streamlit
+streamlit==1.57.0
 duckdb==1.5.3
-pandas
-numpy
-altair
+pandas==3.0.3
+numpy==2.4.6
+pyarrow==24.0.0
+altair==6.1.0
 requests
 PyYAML
 openpyxl
