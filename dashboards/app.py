@@ -290,11 +290,13 @@ def paid_consults_detail(since_s: str, until_s: str) -> "pd.DataFrame":
 
 
 @st.cache_data(ttl=60)
+@st.cache_data(ttl=600, show_spinner=False)
 def load_queries() -> dict[str, str]:
     """Parse executive_cards.sql + counsellor_cards.sql into a dict of
     {view_name: SELECT body}. DuckDB doesn't accept bind parameters inside
     CREATE VIEW, so we treat the files as template libraries and bind at
-    execute time."""
+    execute time. Cached: the .sql files only change on redeploy, which
+    restarts the app and clears the cache anyway."""
     text = (
         SQL_PATH.read_text(encoding="utf-8")
         + "\n" + SQL_COUNS_PATH.read_text(encoding="utf-8")
@@ -312,25 +314,38 @@ def load_metrics_yaml() -> dict:
     return yaml.safe_load(YAML_PATH.read_text(encoding="utf-8"))
 
 
-def run_view(view: str, binds: dict) -> dict:
-    """Run a card query and return {'current': {...}, 'prior': {...}}."""
+@st.cache_data(ttl=600, show_spinner=False)
+def _fetch_view_df(view: str, binds_key: tuple) -> pd.DataFrame:
+    """Execute a templated view (passing ONLY the binds it references) and
+    return the raw DataFrame. CACHED for 10 min keyed on (view, binds): the
+    underlying data only changes when the ETL runs (hours apart), so this keeps
+    tab switches and reruns from re-hitting MotherDuck for every card — the main
+    source of the cloud app's latency. st.cache_data returns a fresh copy per
+    call, so callers can safely mutate the result."""
     queries = load_queries()
     body = queries.get(view)
     if body is None:
+        return pd.DataFrame()
+    binds = dict(binds_key)
+    needed = {k: v for k, v in binds.items() if ("$" + k) in body}
+    df = get_con().execute(body, needed).fetchdf()
+    return df if df is not None else pd.DataFrame()
+
+
+def run_view(view: str, binds: dict) -> dict:
+    """Run a card query and return {'current': {...}, 'prior': {...}}."""
+    queries = load_queries()
+    if view not in queries:
         # View not parsed yet (cache TTL miss during hot-reload) or removed —
         # short-circuit to {} so the caller sees an empty dict, not None.
         return {}
-    con = get_con()
     try:
-        df = con.execute(body, binds).fetchdf()
+        df = _fetch_view_df(view, tuple(sorted(binds.items())))
     except Exception as e:
         st.error(f"Query failed for {view}: {e}")
         return {}
-    if df is None or df.empty:
-        return {}
-    if "tag" not in df.columns:
-        # Stale cached SQL body (likely during hot-reload after a SQL edit)
-        # parsed an unrelated view — return {} so the caller doesn't crash.
+    if df is None or df.empty or "tag" not in df.columns:
+        # Empty, or a stale cached SQL body parsed an unrelated view — return {}.
         return {}
     out = {}
     for _, row in df.iterrows():
@@ -343,14 +358,11 @@ def run_df(view: str, binds: dict) -> pd.DataFrame:
     the raw DataFrame. Lets drill-down views that don't use prior_* (or city)
     share the same binds dict without DuckDB complaining about excess params."""
     queries = load_queries()
-    body = queries.get(view)
-    if body is None:
+    if view not in queries:
         st.error(f"Unknown view: {view}")
         return pd.DataFrame()
-    needed = {k: v for k, v in binds.items() if ("$" + k) in body}
     try:
-        df = get_con().execute(body, needed).fetchdf()
-        return df if df is not None else pd.DataFrame()
+        return _fetch_view_df(view, tuple(sorted(binds.items())))
     except Exception as e:
         st.error(f"Query failed for {view}: {e}")
         return pd.DataFrame()
@@ -782,16 +794,11 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
     couns_active = st.session_state["couns_card"]
 
     # ---- Pull per-calendar appointments for current + prior windows ----
-    queries = load_queries()
-    con = get_con()
-
     def _by_cal(s, u):
-        b = {"since": s.isoformat(), "until": u.isoformat(), "city": city}
-        try:
-            df = con.execute(queries["vw_counsellors"], b).fetchdf()
-        except Exception as e:
-            st.error(f"Counsellors query failed: {e}")
-            return {}
+        # run_df is cached (10 min) so these two calls don't re-hit MotherDuck
+        # on every rerun / tab switch.
+        df = run_df("vw_counsellors",
+                    {"since": s.isoformat(), "until": u.isoformat(), "city": city})
         # Defensive: this runs at module scope, so a malformed result here would
         # crash EVERY tab, not just Counsellors. If the expected key column is
         # absent, degrade to an empty mapping rather than taking the app down.
@@ -5666,8 +5673,13 @@ with tab_e1:
         # ---- 1) Leads-by-source over time (one line per source) — Queries excluded ----
         st.markdown("---")
         st.markdown("### 📈 Leads by source — over time")
-        _ts = (leads_df.assign(d=pd.to_datetime(leads_df["lead_date"]))
-                 .groupby([pd.Grouper(key="d", freq="D"), "refined_source"])
+        # Keep only the top 6 sources by total leads in the window; roll the
+        # long tail into a single "Others" line so the chart stays readable.
+        _base = leads_df.assign(d=pd.to_datetime(leads_df["lead_date"]))
+        _top6 = list(_base["refined_source"].value_counts().head(6).index)
+        _base["refined_source"] = _base["refined_source"].where(
+            _base["refined_source"].isin(_top6), "Others")
+        _ts = (_base.groupby([pd.Grouper(key="d", freq="D"), "refined_source"])
                  .size().reset_index(name="Leads"))
         if _ts.empty:
             st.caption("No leads to chart in this window.")
@@ -5692,8 +5704,9 @@ with tab_e1:
                     .properties(height=320).configure_view(strokeWidth=0))
             st.altair_chart(line, use_container_width=True)
             st.caption("Each line = that source's leads per day (read straight off the "
-                       "y-axis). Click a legend item to isolate a source. Queries "
-                       "excluded — they have their own scorecard.")
+                       "y-axis). Top 6 sources shown; the rest are rolled into "
+                       "“Others”. Click a legend item to isolate a source. "
+                       "Queries excluded — they have their own scorecard.")
 
         # ---- 2) Counsellor booking share & show rate (pie + table) ----
         st.markdown("### 🥧 Counsellor booking share & show rate")
