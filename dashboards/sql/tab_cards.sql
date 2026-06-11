@@ -1817,6 +1817,14 @@ meta_ck AS (
 -- GHL "Lead Source" custom field (Meta Ads / Walk-in / Website Form / Social
 -- Media DM / Chatbot / Email Marketing) — an explicit, human/CRM-set source.
 clead AS (SELECT contact_id, lead_source FROM fact_contact_lead_source)
+-- Organic Search requires an opportunity (pipeline + stage). A contact tagged
+-- Organic Search with no pipeline AND no stage is not a genuine Organic Search
+-- lead, so re-bucket it to 'No Activity' (which is excluded from the Leads count).
+SELECT * REPLACE (
+    CASE WHEN refined_source = 'Organic Search' AND (pipeline IS NULL OR stage IS NULL)
+         THEN 'No Activity' ELSE refined_source END AS refined_source
+)
+FROM (
 SELECT
     ch.contact_id, ch.email, ch.contact_name, ch.phone,
     CASE WHEN ch.created_date BETWEEN $since AND $until THEN ch.created_date
@@ -2004,7 +2012,8 @@ LEFT JOIN prior_opp po ON po.contact_id = ch.contact_id
 LEFT JOIN paid_ever pe ON pe.contact_id = ch.contact_id
 LEFT JOIN walkin_appt wa ON wa.contact_id = ch.contact_id
 LEFT JOIN fact_contact_latest_source lcs ON lcs.contact_id = ch.contact_id
-LEFT JOIN clead cl ON cl.contact_id = ch.contact_id;
+LEFT JOIN clead cl ON cl.contact_id = ch.contact_id
+) _lead_base;
 
 
 -- =====================================================================
