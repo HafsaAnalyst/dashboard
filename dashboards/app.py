@@ -792,7 +792,12 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
         except Exception as e:
             st.error(f"Counsellors query failed: {e}")
             return {}
-        return {r["calendar_id"]: r for _, r in df.iterrows()} if not df.empty else {}
+        # Defensive: this runs at module scope, so a malformed result here would
+        # crash EVERY tab, not just Counsellors. If the expected key column is
+        # absent, degrade to an empty mapping rather than taking the app down.
+        if df.empty or "calendar_id" not in df.columns:
+            return {}
+        return {r["calendar_id"]: r for _, r in df.iterrows()}
 
     by_cal_cur = _by_cal(since, until)
     by_cal_pri = _by_cal(prior_since, prior_until)

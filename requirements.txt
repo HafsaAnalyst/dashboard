@@ -4,7 +4,7 @@
 
 # --- core app ---
 streamlit
-duckdb
+duckdb==1.5.3
 pandas
 numpy
 altair
