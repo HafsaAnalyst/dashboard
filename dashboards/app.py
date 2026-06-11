@@ -5821,6 +5821,10 @@ with tab_e1:
                    .agg(Booked=("appointments", "sum"), Showed=("showed", "sum"))
                    .reset_index())
             _gc["ShowRate"] = (_gc["Showed"] / _gc["Booked"]).replace([float("inf")], 0).fillna(0)
+            # Booking Rate = this counsellor's booked appts ÷ total leads in the
+            # window (the all-source Executive Leads cohort), i.e. the share of
+            # the period's leads that booked with that counsellor.
+            _gc["BookRate"] = (_gc["Booked"] / n_leads) if n_leads else 0.0
             _gc = _gc.sort_values("Booked", ascending=False)
             cpie, ctbl = st.columns([1, 1])
             with cpie:
@@ -5838,6 +5842,7 @@ with tab_e1:
                     "Counsellor": _gc["Counsellor"].values,
                     "Booked": _gc["Booked"].astype(int).values,
                     "Showed": _gc["Showed"].astype(int).values,
+                    "Booking Rate": (_gc["BookRate"] * 100).map(lambda v: f"{v:.0f}%").values,
                     "Show Rate": (_gc["ShowRate"] * 100).map(lambda v: f"{v:.0f}%").values,
                 })
                 st.dataframe(_gd, hide_index=True, use_container_width=True, height=300)
