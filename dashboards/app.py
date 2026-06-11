@@ -578,6 +578,68 @@ def render_card(
 
 
 # ---------------------------------------------------------------------
+# Scorecard metric definitions — surfaced as a hover tooltip (the small "?"
+# / native button tooltip) on every scorecard, grouped by tab.
+# ---------------------------------------------------------------------
+METRIC_DEFS = {
+    "exec": {
+        "Leads": "Unique contacts created or revived in the period (plus contacts booked-in that period). Counts every source. Excludes No Activity & Queries.",
+        "Queries": "Contacts with no pipeline/opportunity assigned — general enquiries, not yet real leads. Shown separately so they don't inflate Leads.",
+        "Booked": "Leads who booked a consultation appointment in the period.",
+        "Showed": "Booked consultations the lead actually attended.",
+        "Conversions": "Contacts who reached a converting stage: COE (L2C-Education / CLT-Onshore: COE/Initial Received or Won) + POC (CLT-VISA: Application Submitted / Acknowledgment+Doc / Won). Click for All / POC / COE.",
+        "Ad Spend": "Meta Ads spend over the period, converted USD→AUD at the shown FX rate.",
+        "Leads to Booking": "Booked ÷ Leads — the share of leads that booked a consultation.",
+        "Show Rate": "Showed ÷ Booked — the share of booked consultations that were attended.",
+        "Blended CPA": "Meta ad spend ÷ ALL appointments booked in the window (every source, not just Meta) — blended cost per appointment.",
+        "Revenue": "Succeeded GHL payments received in the period (AUD); payers = distinct paying contacts.",
+    },
+    "meta": {
+        "Spend": "Meta Ads spend (USD→AUD) for the selected period and city.",
+        "Leads": "Meta-attributed GHL leads (created+revived): Paid-Social classified, or utm_campaign matching a live Meta campaign.",
+        "CPL": "Cost per lead = spend ÷ Meta-attributed leads.",
+        "Link Clicks": "Inline link clicks on the ads.",
+        "Cost per Link Click": "Spend ÷ link clicks.",
+        "Messaging Conversations Started": "Meta messaging conversations started from the ads.",
+        "Booking Rate": "Booked ÷ Meta-attributed leads.",
+        "Show Rate": "Showed ÷ Booked (Meta-attributed).",
+        "Cost per Appointment": "Spend ÷ appointments booked by Meta-attributed leads.",
+        "Conversions": "Meta-attributed leads that reached a converting stage (COE / Initial / Won).",
+    },
+    "meta_tile": {
+        "Spend": "Meta Ads spend for this account (USD→AUD).",
+        "Impressions": "Times the ads were shown.",
+        "Clicks": "All clicks on the ads.",
+        "CTR": "Click-through rate = clicks ÷ impressions.",
+        "Leads (Meta)": "Leads reported by Meta's pixel/lead events.",
+        "GHL Leads": "GHL contacts attributed to this Meta account (created+revived).",
+        "CPL": "Cost per lead = spend ÷ leads.",
+        "Bookings": "Meta-attributed leads who booked a consultation.",
+        "Showed": "Booked consultations that were attended.",
+        "Cost per Booking": "Spend ÷ bookings.",
+    },
+    "couns": {
+        "Slots Available": "Weekday consultation slots open across active counsellors (Sat/Sun excluded).",
+        "Slots Booked": "Slots that were booked in the period.",
+        "Showed": "Booked consultations the client attended.",
+        "No Show": "Booked consultations the client did not attend.",
+        "Paid Consults": "Consultations matched to a succeeded Stripe payment (follow-ups excluded).",
+        "Best Performer": "Counsellor with the highest show rate this period.",
+    },
+    "seo": {
+        "Sessions": "GA4 sessions on the website in the period.",
+        "Engaged Sess.": "GA4 engaged sessions (>10s, a conversion, or 2+ pageviews).",
+        "GSC Clicks": "Clicks from Google Search results (Search Console).",
+        "GSC Impressions": "Times the site appeared in Google Search results.",
+        "Avg Position": "Average ranking position in Google Search (lower is better).",
+        "Website Leads": "Organic Search leads (same classification as Executive's Organic Search cohort).",
+        "Bookings": "Website/organic leads who booked a consultation.",
+        "Showed": "Booked consultations that were attended (showed ÷ leads).",
+    },
+}
+
+
+# ---------------------------------------------------------------------
 # Period resolution
 # ---------------------------------------------------------------------
 
@@ -1281,6 +1343,7 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
             key=f"couns_{scorecard_label}_{key_suffix}",
             use_container_width=True,
             type=("primary" if is_active else "secondary"),
+            help=METRIC_DEFS["couns"].get(scorecard_label),
         ):
             if is_active:
                 _couns_detail_modal()
@@ -2764,6 +2827,7 @@ section[data-testid="stMain"] [data-testid="stButton"] > button > div > p{
             key=f"mb_{scorecard_label}_{key_suffix}{kp}",
             use_container_width=True,
             type=("primary" if is_active else "secondary"),
+            help=METRIC_DEFS["meta_tile"].get(scorecard_label),
         ):
             st.session_state[f"meta_card{kp}"] = scorecard_label
             if pre_account:
@@ -3519,7 +3583,8 @@ def render_meta1_tab():
     def _sc(col, name, value, sub, delta):
         lines = [name.upper(), value] + [x for x in (sub, delta) if x]
         with col:
-            if st.button("\n\n".join(lines), key=f"meta1sc_{name}", use_container_width=True):
+            if st.button("\n\n".join(lines), key=f"meta1sc_{name}", use_container_width=True,
+                         help=METRIC_DEFS["meta"].get(name)):
                 st.session_state["meta1_card"] = name
                 _m1_modal()
 
@@ -4270,6 +4335,7 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
             key=f"seo_{scorecard_label}_{key_suffix}",
             use_container_width=True,
             type=("primary" if is_active else "secondary"),
+            help=METRIC_DEFS["seo"].get(scorecard_label),
         ):
             if is_active:
                 # Re-click of the active scorecard → open modal
@@ -5620,7 +5686,8 @@ with tab_e1:
             lines = [name.upper(), value] + [x for x in extra if x]
             with col:
                 if st.button("\n\n".join(lines), key=f"e1sc_{name}",
-                             use_container_width=True):
+                             use_container_width=True,
+                             help=METRIC_DEFS["exec"].get(name)):
                     st.session_state["e1_card"] = name
                     _e1_modal()
 
