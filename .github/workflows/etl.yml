@@ -1,0 +1,51 @@
+name: ETL refresh
+
+# Keeps the MotherDuck database (which the live dashboard reads) fresh.
+# Runs every 3 hours, and can be triggered manually from the Actions tab.
+on:
+  schedule:
+    - cron: "0 */3 * * *"   # every 3 hours, UTC
+  workflow_dispatch: {}      # manual "Run workflow" button
+
+# Never let two ETL runs write to MotherDuck at the same time.
+concurrency:
+  group: etl
+  cancel-in-progress: false
+
+jobs:
+  etl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install ETL dependencies
+        run: pip install -r etl/requirements-etl.txt
+
+      - name: Write Google service-account files
+        env:
+          GA4_SA_JSON: ${{ secrets.GA4_SERVICE_ACCOUNT_JSON }}
+          GSC_SA_JSON: ${{ secrets.GSC_SERVICE_ACCOUNT_JSON }}
+        run: |
+          printf '%s' "$GA4_SA_JSON" > ga4_sa.json
+          printf '%s' "$GSC_SA_JSON" > gsc_sa.json
+
+      - name: Run incremental ETL
+        env:
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+          MOTHERDUCK_DATABASE: migration
+          GHL_API_KEY: ${{ secrets.GHL_API_KEY }}
+          GHL_LOCATION_ID: ${{ secrets.GHL_LOCATION_ID }}
+          META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+          META_MELBOURNE_AD_ACCOUNT_ID: ${{ secrets.META_MELBOURNE_AD_ACCOUNT_ID }}
+          META_SYDNEY_AD_ACCOUNT_ID: ${{ secrets.META_SYDNEY_AD_ACCOUNT_ID }}
+          GA4_PROPERTY_ID: ${{ secrets.GA4_PROPERTY_ID }}
+          GA4_SERVICE_ACCOUNT_FILE: ga4_sa.json
+          GSC_SITE_URL: ${{ secrets.GSC_SITE_URL }}
+          GSC_SERVICE_ACCOUNT_FILE: gsc_sa.json
+        run: python etl/run_etl.py
