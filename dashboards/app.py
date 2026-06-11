@@ -3618,26 +3618,14 @@ def render_meta1_tab():
                "**Leads** drill-down. Click any scorecard for the per-campaign view with an "
                "**All / Melbourne / Sydney** selector.")
 
-    # ===== Campaign performance — kill / scale / optimize (through Show Rate) =====
+    # ===== Campaign performance (through Show Rate) =====
     st.markdown("---")
-    st.markdown("### 📊 Campaign performance — kill / scale / optimize")
-    pf1, pf2 = st.columns([1.2, 2])
-    with pf1:
-        if "meta1_perf_status" not in st.session_state:
-            st.session_state["meta1_perf_status"] = "Active"
-        perf_status = st.segmented_control(
-            "Campaign status", ["All", "Active", "Inactive", "Other"],
-            key="meta1_perf_status") or "All"
-    with st.expander("⚙️ Targets (drive the Status column)"):
-        tg = st.columns(4)
-        tgt_cpl = tg[0].number_input("Target CPL ($)", value=30.0, min_value=0.0, step=5.0, key="m1_tcpl")
-        tgt_br = tg[1].number_input("Target Booking Rate (%)", value=20.0, min_value=0.0,
-                                    max_value=100.0, step=1.0, key="m1_tbr") / 100.0
-        tgt_shr = tg[2].number_input("Target Show Rate (%)", value=50.0, min_value=0.0,
-                                     max_value=100.0, step=1.0, key="m1_tshr") / 100.0
-        tgt_cpa = tg[3].number_input("Target Cost / Appt ($)", value=200.0, min_value=0.0,
-                                     step=10.0, key="m1_tcpa")
-    MIN_SPEND = 50.0
+    st.markdown("### 📊 Campaign performance")
+    if "meta1_perf_status" not in st.session_state:
+        st.session_state["meta1_perf_status"] = "Active"
+    perf_status = st.segmented_control(
+        "Campaign status", ["All", "Active", "Inactive", "Other"],
+        key="meta1_perf_status") or "All"
 
     # avg days to book (lead created -> appointment booked) per campaign — how
     # long pre-sales takes to convince the lead to book.
@@ -3649,41 +3637,11 @@ def render_meta1_tab():
     else:
         _d2b_map = {}
 
-    life = _meta1_lifetime_perf(until.isoformat(), fx)
-
-    def _classify(spend, booked, cpl, cpa, br, shr):
-        if spend >= MIN_SPEND and booked == 0:
-            return "Kill"
-        if (cpa is not None and pd.notna(cpa) and cpa > tgt_cpa) \
-                or (br is not None and br < tgt_br) \
-                or (shr is not None and shr < tgt_shr):
-            return "Optimize"
-        if (cpl is not None and pd.notna(cpl) and cpl <= tgt_cpl) \
-                and (br is None or br >= tgt_br) and (shr is None or shr >= tgt_shr):
-            return "Scale" if cpl < tgt_cpl * 0.75 else "Keep"
-        return "Keep"
-
-    def _perf_status(r):
-        if r["campaign"] in ("Queries", "(no campaign)"):
-            return "—"
-        if r["status"] == "Active":
-            return _classify(
-                r["spend_aud"], r["booked"], r["cpl"], r["cpa"],
-                r["booking_rate"] if pd.notna(r["booking_rate"]) else None,
-                r["show_rate"] if pd.notna(r["show_rate"]) else None)
-        # Inactive -> score on lifetime (previous) performance.
-        lm = life.get(r["_k"])
-        if not lm or lm["leads"] == 0:
-            return "No history"
-        return _classify(lm["spend_aud"], lm["booked"], lm["cpl"], lm["cpa"],
-                         lm["booking_rate"], lm["show_rate"])
-
     perf = camp.copy()
     if perf_status != "All":
         perf = perf[perf["status"] == perf_status]
     perf = perf.sort_values("spend_aud", ascending=False)
     perf["d2b"] = perf["_k"].map(_d2b_map)
-    perf["Status"] = perf.apply(_perf_status, axis=1)
     perf_disp = pd.DataFrame({
         "Campaign": perf["campaign"].values,
         "Account": perf["account"].values,
@@ -3696,25 +3654,13 @@ def render_meta1_tab():
         "Show Rate": perf["show_rate"].map(_pct).values,
         "Cost/Appt": perf["cpa"].map(_money).values,
         "Avg Days to Book": perf["d2b"].map(lambda v: f"{v:.0f}d" if pd.notna(v) else "—").values,
-        "Status": perf["Status"].values,
     })
-    _SS = {
-        "Scale":    "background-color:#d1fae5; color:#065f46; font-weight:700; border-radius:999px;",
-        "Keep":     "background-color:#dbeafe; color:#1e40af; font-weight:700; border-radius:999px;",
-        "Optimize": "background-color:#fef3c7; color:#92400e; font-weight:700; border-radius:999px;",
-        "Kill":     "background-color:#fee2e2; color:#991b1b; font-weight:700; border-radius:999px;",
-        "No history": "background-color:#f3f4f6; color:#6b7280; border-radius:999px;",
-    }
-    _styler = perf_disp.style.map(lambda v: _SS.get(v, ""), subset=["Status"])
-    st.dataframe(_styler, hide_index=True, use_container_width=True,
+    st.dataframe(perf_disp, hide_index=True, use_container_width=True,
                  height=min(560, 60 + 36 * len(perf_disp)))
     st.caption(
-        f"**Status logic**: **Kill** = spend ≥ ${MIN_SPEND:.0f} with 0 bookings · "
-        f"**Optimize** = Cost/Appt > ${tgt_cpa:.0f} *or* booking rate < {tgt_br*100:.0f}% *or* show rate "
-        f"< {tgt_shr*100:.0f}% · **Scale** = CPL < ${tgt_cpl*0.75:.0f} with rates on target · **Keep** = on "
-        "target. **Inactive** campaigns are scored on their **lifetime** (previous) performance so you can "
-        "see which ones worked. Conversions excluded (they take months) — judged through **Show Rate**. "
-        "**Avg Days to Book** = mean lead-created → appointment-booked.")
+        "Per-campaign performance for the window. Conversions excluded (they take "
+        "months) — judged through **Show Rate**. **Avg Days to Book** = mean "
+        "lead-created → appointment-booked.")
 
     # ===== Analysis — lead quality vs quantity (vs last period) =====
     st.markdown("---")
