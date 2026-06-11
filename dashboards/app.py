@@ -5697,7 +5697,7 @@ with tab_e1:
         else:
             # One line per source so each source's value reads directly off the
             # y-axis (a stacked area hid this — a band's height was its position in
-            # the stack, not its lead count).
+            # the stack, not its lead count). Legend-click isolates a source.
             _hover = _alt.selection_point(fields=["refined_source"], bind="legend")
             line = (_alt.Chart(_ts).mark_line(interpolate="monotone", strokeWidth=2.5,
                                               point=True)
@@ -5707,17 +5707,37 @@ with tab_e1:
                                  scale=_alt.Scale(zero=True)),
                         color=_alt.Color("refined_source:N", title="Source",
                                          scale=_alt.Scale(range=PAL)),
-                        opacity=_alt.condition(_hover, _alt.value(1.0), _alt.value(0.15)),
-                        tooltip=[_alt.Tooltip("d:T", title="Date", format="%b %d"),
-                                 _alt.Tooltip("refined_source:N", title="Source"),
-                                 _alt.Tooltip("Leads:Q")])
-                    .add_params(_hover)
-                    .properties(height=320).configure_view(strokeWidth=0))
-            st.altair_chart(line, use_container_width=True)
+                        opacity=_alt.condition(_hover, _alt.value(1.0), _alt.value(0.15)))
+                    .add_params(_hover))
+
+            # Shared vertical rule → one hover card listing EVERY source's leads
+            # for that date (GA4-style), so you don't hover each point one by one.
+            # Wide pivot feeds the combined tooltip; sources ordered by total
+            # leads (desc) so the biggest reads first.
+            _wide = (_ts.pivot_table(index="d", columns="refined_source",
+                                     values="Leads", fill_value=0).reset_index())
+            _order = [s for s in (_ts.groupby("refined_source")["Leads"].sum()
+                                  .sort_values(ascending=False).index.tolist())
+                      if s in _wide.columns]
+            _nearest = _alt.selection_point(nearest=True, on="mouseover",
+                                            fields=["d"], empty=False)
+            rule = (_alt.Chart(_wide).mark_rule(color="#9AA5B1", strokeWidth=1)
+                    .encode(
+                        x=_alt.X("d:T", title=None, axis=_xaxis),
+                        opacity=_alt.condition(_nearest, _alt.value(0.45), _alt.value(0)),
+                        tooltip=[_alt.Tooltip("d:T", title="Date", format="%b %d")]
+                                + [_alt.Tooltip(field=s, type="quantitative", title=s)
+                                   for s in _order])
+                    .add_params(_nearest))
+
+            chart = ((line + rule).properties(height=320)
+                     .configure_view(strokeWidth=0))
+            st.altair_chart(chart, use_container_width=True)
             st.caption("Each line = that source's leads per day (read straight off the "
                        "y-axis). Top 6 sources shown; the rest are rolled into "
-                       "“Others”. Click a legend item to isolate a source. "
-                       "Queries excluded — they have their own scorecard.")
+                       "“Others”. Hover any date to see all sources at once; click a "
+                       "legend item to isolate one. Queries excluded — they have their "
+                       "own scorecard.")
 
         # ---- 2) Counsellor booking share & show rate (pie + table) ----
         st.markdown("### 🥧 Counsellor booking share & show rate")
