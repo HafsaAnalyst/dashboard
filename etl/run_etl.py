@@ -44,6 +44,8 @@ DB_PATH = ROOT / "data" / "migration_dashboard.duckdb"
 SCHEMA_PATH = ROOT / "models" / "schema.sql"
 FULL_REFRESH_START = "2024-01-01"
 INCREMENTAL_DAYS = 2  # overlap window for late-arriving data
+META_DAILY_LOOKBACK = 30  # re-fetch this many days of Meta daily spend each run
+                          # (spend retro-updates; fills skipped days)
 
 logger = logging.getLogger("etl")
 
@@ -210,6 +212,11 @@ def extract_meta(con, since: str, until: str) -> dict:
         ("Melbourne", os.getenv("META_MELBOURNE_AD_ACCOUNT_ID")),
         ("Sydney", os.getenv("META_SYDNEY_AD_ACCOUNT_ID")),
     ]
+    # Meta spend retro-updates for several days (attribution windows), and a
+    # single missed run leaves a permanent gap. So re-fetch a WIDER window for the
+    # daily facts than the 2-day incremental overlap — this corrects late-arriving
+    # spend and backfills any skipped day each run.
+    daily_since = min(since, (datetime.now() - timedelta(days=META_DAILY_LOOKBACK)).strftime("%Y-%m-%d"))
     insights_total = 0
     daily_total = 0
     for label, acct in accounts:
@@ -224,7 +231,7 @@ def extract_meta(con, since: str, until: str) -> dict:
         except Exception as e:
             logger.exception("Meta campaign insights for %s failed: %s", label, e)
         try:
-            daily = meta.fetch_daily_insights(acct, since, until)
+            daily = meta.fetch_daily_insights(acct, daily_since, until)
             df = normalize.normalize_meta_daily(daily, label)
             upsert_df(con, "fact_meta_daily", df, "daily_key")
             daily_total += len(df)
