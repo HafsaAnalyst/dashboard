@@ -3795,98 +3795,64 @@ def render_meta1_tab():
     for lvl, txt in ins:
         _card(lvl, txt)
 
-    # ===== Lead quality — pre-sales follow-up funnel =====
-    # Opps enter New Lead -> Pre Sales (1) -> Pre Sales (2); ~5 calls per stage
-    # (≈10). Leads that stall or are LOST in these stages = no response / not
-    # interested = a quality / targeting signal for the performance marketer.
-    st.markdown("### 🎯 Lead quality — pre-sales follow-up")
+    # ===== Lead quality — outcomes of the period's leads =====
+    # Full new + revived lead cohort for the selected window — the SAME cohort &
+    # count as the Executive tab's Leads scorecard (all sources, not just Meta).
+    # For each lead we report its current opportunity outcome (Active / Lost /
+    # Won) and whether it ever booked an appointment. Booking is matched by
+    # contact at ANY date (a Jun lead may book in Jul), NOT restricted to the
+    # selected duration — the view's appt join already covers all-time bookings.
+    st.markdown("### 🎯 Lead quality — lead outcomes")
 
-    def _is_early(stage):
-        s = str(stage or "").strip().lower()
-        return (s.startswith("new lead") or s.startswith("pre sales")
-                or s.startswith("cold") or s in ("new facebook lead", "new meta lead"))
-
-    def _q_bucket(r):
-        pip, status = r["pipeline"], str(r["status"] or "").lower()
-        early = _is_early(r["stage"])
-        if r["appt_booked"] == 1:
-            return "Booked / progressed"
-        if not pip:
-            return "No opportunity"
-        if early and status in ("lost", "abandoned"):
-            return "Lost in pre-sales"
-        if early:
-            return "Stuck in pre-sales (calling)"
-        if status in ("lost", "abandoned"):
-            return "Lost (later stage)"
-        return "Progressed"
-
-    if ps_an.empty:
-        st.caption("No active-campaign leads in this window.")
+    _lq = run_df("vw_exec1_lead_detail",
+                 {"since": since.isoformat(), "until": until.isoformat()})
+    if not _lq.empty:
+        # Match the Executive 'Leads' cohort exactly: drop No Activity & Queries.
+        _lq = _lq[~_lq["refined_source"].isin(["No Activity", "Queries"])].copy()
+    if _lq.empty:
+        st.caption("No new or revived leads in this window.")
     else:
-        bk = ps_an.apply(_q_bucket, axis=1)
-        vc = bk.value_counts()
-        n = len(ps_an)
-        with_opp = int((bk != "No opportunity").sum())
-        lost_ps = int((bk == "Lost in pre-sales").sum())
-        stuck_ps = int((bk == "Stuck in pre-sales (calling)").sum())
-        progressed = int(bk.isin(["Booked / progressed", "Progressed"]).sum())
-        ps_problem = lost_ps + stuck_ps
-        ps_rate = (ps_problem / with_opp) if with_opp else 0
-        q_rate = (progressed / with_opp) if with_opp else 0
+        _tot     = len(_lq)
+        _stat    = _lq["status"].astype(str).str.lower()
+        n_active = int((_stat == "open").sum())
+        n_lost   = int(_stat.isin(["lost", "abandoned"]).sum())
+        n_won    = int((_stat == "won").sum())
+        n_noopp  = int((~_stat.isin(["open", "lost", "abandoned", "won"])).sum())
+        n_booked = int(_lq["appt_booked"].fillna(0).astype(int).sum())
 
-        order = ["Booked / progressed", "Progressed", "Stuck in pre-sales (calling)",
-                 "Lost in pre-sales", "Lost (later stage)", "No opportunity"]
-        qt = pd.DataFrame([{
-            "Stage outcome": b, "Leads": int(vc.get(b, 0)),
-            "% of leads": f"{vc.get(b, 0)/n*100:.0f}%",
-        } for b in order if vc.get(b, 0)])
-        c1, c2 = st.columns([1, 1])
+        def _pof(n):
+            return f"{n / _tot * 100:.0f}%" if _tot else "0%"
+
+        rows = [
+            {"Outcome": "Total leads (new + revived)", "Leads": _tot,    "% of leads": "100%"},
+            {"Outcome": "Active (open)",                "Leads": n_active, "% of leads": _pof(n_active)},
+            {"Outcome": "Lost",                         "Leads": n_lost,   "% of leads": _pof(n_lost)},
+            {"Outcome": "Won",                          "Leads": n_won,    "% of leads": _pof(n_won)},
+        ]
+        if n_noopp:
+            rows.append({"Outcome": "No opportunity yet", "Leads": n_noopp,
+                         "% of leads": _pof(n_noopp)})
+        rows.append({"Outcome": "Booked appointment (any date)", "Leads": n_booked,
+                     "% of leads": _pof(n_booked)})
+        lq_tbl = pd.DataFrame(rows)
+
+        c1, c2 = st.columns([1.4, 1])
         with c1:
-            st.dataframe(qt, hide_index=True, use_container_width=True, height=240)
+            st.dataframe(lq_tbl, hide_index=True, use_container_width=True, height=260)
         with c2:
-            st.metric("Stall / lost in pre-sales", f"{ps_rate*100:.0f}%",
-                      help="Lost or still being called in New Lead / Pre Sales (1) / Pre Sales (2), "
-                           "as a share of leads with an opportunity.")
-            st.metric("Progressed past follow-up", f"{q_rate*100:.0f}%")
+            st.metric("Won", f"{(n_won / _tot * 100) if _tot else 0:.0f}%",
+                      help="Leads whose latest opportunity is Won, as a share of all leads in the window.")
+            st.metric("Lost", f"{(n_lost / _tot * 100) if _tot else 0:.0f}%",
+                      help="Leads whose latest opportunity is Lost / Abandoned.")
+            st.metric("Booked", f"{(n_booked / _tot * 100) if _tot else 0:.0f}%",
+                      help="Leads who booked an appointment at any date (matched by contact in the calendar).")
 
-        if with_opp:
-            lvl = "warn" if ps_rate > 0.40 else "good"
-            tail = ("High pre-sales loss alongside healthy lead volume is the classic **targeting / "
-                    "lead-quality** signature — the ads deliver contacts that don't engage through "
-                    "follow-up (no response after ~10 calls, or 'not interested')."
-                    if ps_rate > 0.40 else
-                    "Pre-sales conversion is healthy — most leads engage with follow-up.")
-            _card(lvl,
-                  f"**{ps_rate*100:.0f}% of active-campaign leads stall or are lost in pre-sales** — "
-                  f"**{stuck_ps}** still being called (New Lead → Pre Sales 1 → Pre Sales 2) and "
-                  f"**{lost_ps} lost / not interested**; only **{q_rate*100:.0f}%** progressed past "
-                  f"follow-up. {tail}")
-
-        # worst campaigns by pre-sales progression (min volume 3)
-        psd = ps_an.copy()
-        psd["bk"] = bk.values
-        cq = (psd.groupby("campaign").agg(
-                leads=("contact_id", "count"),
-                prog=("bk", lambda s: s.isin(["Booked / progressed", "Progressed"]).sum()),
-                lost=("bk", lambda s: (s == "Lost in pre-sales").sum())).reset_index())
-        cq = cq[cq["leads"] >= 3].copy()
-        if not cq.empty:
-            cq["prog_rate"] = cq["prog"] / cq["leads"]
-            w = cq.sort_values("prog_rate").iloc[0]
-            if w["prog_rate"] < 0.40:
-                _card("warn",
-                      f"Worst campaign for follow-up: **{str(w['campaign'])[:42]}** — only "
-                      f"**{w['prog_rate']*100:.0f}%** of its {int(w['leads'])} leads progress past "
-                      f"pre-sales ({int(w['lost'])} lost). A lead-quality red flag for this campaign.")
-            b = cq.sort_values("prog_rate", ascending=False).iloc[0]
-            if b["prog_rate"] >= 0.55:
-                _card("good",
-                      f"Best campaign for follow-up: **{str(b['campaign'])[:42]}** — "
-                      f"**{b['prog_rate']*100:.0f}%** of {int(b['leads'])} leads progress past pre-sales. "
-                      "Higher-intent traffic — a candidate to scale.")
-        st.caption("Early stages = New Lead · Pre Sales (1) · Pre Sales (2) · Cold/Nurturing "
-                   "(≈5 calls per stage). 'Progressed' = booked an appointment or moved past pre-sales.")
+        st.caption(
+            f"Cohort = the **{_tot:,} new + revived leads** for the selected duration — the same "
+            "number as **Leads** on the Executive tab (all sources, not just Meta). **Active / "
+            "Lost / Won** = the lead's current opportunity status. **Booked appointment** counts a "
+            "lead who booked at **any** date — a lead from this period may book later — matched by "
+            "contact in the calendar, so it isn't restricted to the selected duration.")
 
 
 with tab_meta1:
