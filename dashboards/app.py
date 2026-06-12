@@ -633,8 +633,9 @@ METRIC_DEFS = {
         "Best Performer": "Counsellor with the highest show rate this period.",
     },
     "seo": {
-        "Sessions": "GA4 sessions on the website in the period.",
-        "Engaged Sess.": "GA4 engaged sessions (>10s, a conversion, or 2+ pageviews).",
+        "Sessions": "GA4 sessions on the website in the period (date-grain GA4 totals — matches the GA4 UI).",
+        "Total Users": "GA4 total users on the website (daily uniques summed over the period).",
+        "Engagement Rate": "GA4 engagement rate = engaged sessions ÷ sessions over the period.",
         "GSC Clicks": "Clicks from Google Search results (Search Console).",
         "GSC Impressions": "Times the site appeared in Google Search results.",
         "Avg Position": "Average ranking position in Google Search (lower is better).",
@@ -4017,17 +4018,15 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
     if city in ("Melbourne", "Sydney"):
         wl_cur_f = wl_cur[wl_cur["city_group"] == city] if not wl_cur.empty else wl_cur
         wl_pri_f = wl_pri[wl_pri["city_group"] == city] if not wl_pri.empty else wl_pri
-        # Filter GA4-by-city for top scorecards too when city is picked
-        gc_cur = ga4_per_city[ga4_per_city["city_group"] == city] \
-                 if not ga4_per_city.empty else ga4_per_city
-        c_sess = int(gc_cur["sessions"].sum())          if not gc_cur.empty else 0
-        c_eng  = int(gc_cur["engaged_sessions"].sum())  if not gc_cur.empty else 0
-        c_conv = int(gc_cur["key_events"].sum())        if not gc_cur.empty else 0
     else:
         wl_cur_f, wl_pri_f = wl_cur, wl_pri
-        c_sess = _scur(ga4, "sessions") or 0
-        c_eng  = _scur(ga4, "engaged_sessions") or 0
-        c_conv = _scur(ga4, "key_events") or 0
+    # GA4 toplines are site-wide (GA4 traffic can't be split by the GHL contact
+    # city) and come from fact_ga4_daily, so Sessions / Total Users / Engagement
+    # Rate match the GA4 UI exactly.
+    c_sess  = _scur(ga4, "sessions") or 0
+    c_users = _scur(ga4, "total_users") or 0
+    c_engr  = _scur(ga4, "engagement_rate")        # fraction 0..1, or None
+    c_conv  = _scur(ga4, "key_events") or 0
 
     # GSC stays site-wide regardless of city pick (no per-city signal available)
     c_gclk = _scur(gsc, "clicks") or 0
@@ -4039,9 +4038,10 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
     c_br   = (c_book / c_wl) if c_wl else None      # booking rate = booked / leads
     c_sr   = (c_show / c_wl) if c_wl else None      # show rate = showed / leads (per spec)
 
-    p_sess = _spri(ga4, "sessions") or 0
-    p_eng  = _spri(ga4, "engaged_sessions") or 0
-    p_conv = _spri(ga4, "key_events") or 0
+    p_sess  = _spri(ga4, "sessions") or 0
+    p_users = _spri(ga4, "total_users") or 0
+    p_engr  = _spri(ga4, "engagement_rate")
+    p_conv  = _spri(ga4, "key_events") or 0
     p_gclk = _spri(gsc, "clicks") or 0
     p_gimp = _spri(gsc, "impressions") or 0
     p_pos  = _spri(gsc, "avg_position")
@@ -4080,7 +4080,8 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
     _show_val = f"{c_show:,}  ·  {c_sr*100:.0f}%" if c_sr is not None else f"{c_show:,}  ·  —"
 
     SEO_VAL = {
-        "Sessions": fmt_int(c_sess), "Engaged Sess.": fmt_int(c_eng),
+        "Sessions": fmt_int(c_sess), "Total Users": fmt_int(c_users),
+        "Engagement Rate": (f"{c_engr*100:.0f}%" if c_engr is not None else "—"),
         "GA4 Conv.": fmt_int(c_conv), "GSC Clicks": fmt_int(c_gclk),
         "GSC Impressions": fmt_int(c_gimp),
         "Avg Position": fmt_position(c_pos) if c_pos else "—",
@@ -4090,7 +4091,8 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
     }
     SEO_DELTA = {
         "Sessions":        _seo_delta(c_sess, p_sess),
-        "Engaged Sess.":   _seo_delta(c_eng,  p_eng),
+        "Total Users":     _seo_delta(c_users, p_users),
+        "Engagement Rate": _seo_pts_delta(c_engr, p_engr),
         "GA4 Conv.":       _seo_delta(c_conv, p_conv),
         "GSC Clicks":      _seo_delta(c_gclk, p_gclk),
         "GSC Impressions": _seo_delta(c_gimp, p_gimp),
@@ -4102,8 +4104,8 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
     }
     # GA4 Conv. and Booking Rate are intentionally omitted from the top grid:
     # GA4 Conv. is excluded; the booking % now lives inside the Bookings card.
-    SEO_METRICS = ["Sessions", "Engaged Sess.", "GSC Clicks", "GSC Impressions",
-                   "Avg Position", "Website Leads", "Bookings", "Showed"]
+    SEO_METRICS = ["Sessions", "Total Users", "Engagement Rate", "GSC Clicks",
+                   "GSC Impressions", "Avg Position", "Website Leads", "Bookings", "Showed"]
 
     def _seo_int_fmt(x):
         return f"{int(x):,}" if str(x) not in ("", "nan") else ""
@@ -4198,8 +4200,8 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
                        "as the Executive_1 tab). Booking % = booked ÷ leads; Show % = "
                        "showed ÷ leads. City via the contact's latest appointment office.")
 
-        # GA4 sessions / engaged / conv — show top landing pages
-        elif m in ("Sessions", "Engaged Sess.", "GA4 Conv."):
+        # GA4 sessions / users / engagement / conv — show top landing pages
+        elif m in ("Sessions", "Total Users", "Engagement Rate", "GA4 Conv."):
             if top_pages.empty:
                 st.info("No GA4 page data in this window.")
             else:
@@ -4270,7 +4272,7 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
                            f"sc{_ri // _per_row + 1}", SEO_DELTA.get(m, ""))
 
     # ---- Melbourne + Sydney city cards (Website-Form lead funnel + chart) ----
-    SEO_TREND_COL = {"Sessions": "sessions", "Engaged Sess.": "engaged_sessions",
+    SEO_TREND_COL = {"Sessions": "sessions",
                      "GA4 Conv.": "ga4_conv", "GSC Clicks": "gsc_clicks",
                      "GSC Impressions": "gsc_impressions", "Avg Position": "gsc_position"}
 
@@ -4291,7 +4293,6 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
             # GA4 traffic for this city
             gc = ga4_per_city[ga4_per_city["city_group"] == city_label] if not ga4_per_city.empty else pd.DataFrame()
             city_sessions = int(gc["sessions"].sum()) if not gc.empty else 0
-            city_engaged  = int(gc["engaged_sessions"].sum()) if not gc.empty else 0
             city_conv     = int(gc["key_events"].sum()) if not gc.empty else 0
 
             st.markdown(
@@ -4301,9 +4302,8 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
                 unsafe_allow_html=True
             )
             suf = f"city_{city_label.lower()}"
-            r = st.columns(2)
-            _seo_scorecard(r[0], "SESSIONS (GA4)", fmt_int(city_sessions), "Sessions",      suf)
-            _seo_scorecard(r[1], "ENGAGED SESS.",  fmt_int(city_engaged),  "Engaged Sess.", suf)
+            r = st.columns(1)
+            _seo_scorecard(r[0], "SESSIONS (GA4)", fmt_int(city_sessions), "Sessions", suf)
             r2 = st.columns(3)
             _seo_scorecard(r2[0], "WEBSITE LEADS", fmt_int(ld), "Website Leads", suf)
             _seo_scorecard(r2[1], "BOOKINGS",      fmt_int(bk), "Bookings",      suf)
@@ -4332,9 +4332,8 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
             chart_df = None
             chart_label = ""
             # 1) GA4 metrics → city-filtered daily trend
-            if seo_active in ("Sessions", "Engaged Sess.", "GA4 Conv.") and not gc.empty:
+            if seo_active in ("Sessions", "GA4 Conv.") and not gc.empty:
                 ga4_col = {"Sessions": "sessions",
-                           "Engaged Sess.": "engaged_sessions",
                            "GA4 Conv.": "key_events"}[seo_active]
                 chart_df = gc[["date", ga4_col]].rename(columns={ga4_col: "value"})
                 chart_label = f"{seo_active} — daily trend ({city_label} only)"

@@ -246,6 +246,15 @@ def extract_ga4(con, since: str, until: str) -> dict:
     except Exception as e:
         logger.exception("GA4 sessions failed: %s", e)
     try:
+        # Date-only site totals so Sessions / Total Users / Engagement Rate match
+        # the GA4 UI (the 5-dimension fact_ga4_sessions over-counts via (other)).
+        daily = ga4.fetch_daily_totals(since, until)
+        df = normalize.normalize_ga4_daily(daily)
+        upsert_df(con, "fact_ga4_daily", df, "date")
+        summary["fact_ga4_daily"] = len(df)
+    except Exception as e:
+        logger.exception("GA4 daily totals failed: %s", e)
+    try:
         pages = ga4.fetch_top_pages(since, until)
         df = normalize.normalize_ga4_pages(pages)
         upsert_df(con, "fact_ga4_pages", df, "page_key")

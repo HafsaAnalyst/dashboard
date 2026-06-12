@@ -71,15 +71,25 @@ HAVING tag IS NOT NULL;
 -- the multiply must happen BEFORE the SUM.
 -- ---------------------------------------------------------------------
 CREATE OR REPLACE VIEW vw_ga4_tab_totals AS
-WITH sessions AS (
+-- Topline site totals come from fact_ga4_daily (date-only GA4 query) so Sessions
+-- / Total Users / Engagement Rate match the GA4 UI exactly. fact_ga4_sessions is
+-- segmented by source/medium/country/city and over-counts via GA4's "(other)"
+-- bucketing, so it is NOT used here. Engagement Rate is re-derived over the whole
+-- period (SUM engaged ÷ SUM sessions) — a daily rate can't be summed.
+WITH daily AS (
     SELECT
         CASE
             WHEN date BETWEEN $since AND $until            THEN 'current'
             WHEN date BETWEEN $prior_since AND $prior_until THEN 'prior'
         END AS tag,
-        SUM(sessions)                                  AS sessions,
-        SUM(sessions * (1 - COALESCE(bounce_rate, 0))) AS engaged_sessions
-    FROM fact_ga4_sessions
+        SUM(sessions)         AS sessions,
+        SUM(engaged_sessions) AS engaged_sessions,
+        SUM(total_users)      AS total_users,
+        SUM(active_users)     AS active_users,
+        CASE WHEN SUM(sessions) > 0
+             THEN SUM(engaged_sessions) * 1.0 / SUM(sessions)
+             ELSE NULL END    AS engagement_rate
+    FROM fact_ga4_daily
     WHERE date BETWEEN $since AND $until
        OR date BETWEEN $prior_since AND $prior_until
     GROUP BY 1
@@ -101,13 +111,16 @@ events AS (
     GROUP BY 1
 )
 SELECT
-    s.tag,
-    s.sessions,
-    s.engaged_sessions,
+    d.tag,
+    d.sessions,
+    d.engaged_sessions,
+    d.total_users,
+    d.active_users,
+    d.engagement_rate,
     COALESCE(e.key_events, 0) AS key_events
-FROM sessions s
-LEFT JOIN events e ON e.tag = s.tag
-WHERE s.tag IS NOT NULL
+FROM daily d
+LEFT JOIN events e ON e.tag = d.tag
+WHERE d.tag IS NOT NULL
   AND COALESCE($city, '') IS NOT NULL;  -- $city is intentionally not filtered (site-wide)
 
 

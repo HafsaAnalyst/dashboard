@@ -347,6 +347,25 @@ CREATE TABLE IF NOT EXISTS fact_ga4_sessions (
     avg_session_duration  DECIMAL(10,2)
 );
 
+-- Grain: 1 row per date — site-wide totals with NO segmentation, so GA4's
+-- session/user metrics match the GA4 UI exactly (fact_ga4_sessions, broken out
+-- by source/medium/country/city, over-counts via GA4's "(other)" bucketing).
+-- Drives the SEO tab topline scorecards (Sessions / Total Users / Engagement
+-- Rate). Sessions & engaged_sessions are session-grain (additive across days);
+-- total_users / active_users are day-unique (summing across days slightly
+-- over-counts cross-day returners — acceptable, and the best offline estimate).
+CREATE TABLE IF NOT EXISTS fact_ga4_daily (
+    date                  DATE PRIMARY KEY,
+    sessions              INTEGER,
+    engaged_sessions      INTEGER,
+    total_users           INTEGER,
+    active_users          INTEGER,
+    new_users             INTEGER,
+    page_views            INTEGER,
+    key_events            INTEGER,
+    avg_session_duration  DECIMAL(10,2)
+);
+
 -- Grain: 1 row per (date, page_path, country).
 CREATE TABLE IF NOT EXISTS fact_ga4_pages (
     page_key             VARCHAR PRIMARY KEY,       -- {date}|{page_path}|{country}

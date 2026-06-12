@@ -695,6 +695,24 @@ def normalize_ga4_sessions(raw: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def normalize_ga4_daily(raw: list[dict]) -> pd.DataFrame:
+    rows = []
+    for r in raw:
+        date = r.get("date") or ""
+        rows.append({
+            "date": pd.to_datetime(date, format="%Y%m%d", errors="coerce").date() if date else None,
+            "sessions": r.get("sessions", 0),
+            "engaged_sessions": r.get("engaged_sessions", 0),
+            "total_users": r.get("total_users", 0),
+            "active_users": r.get("active_users", 0),
+            "new_users": r.get("new_users", 0),
+            "page_views": r.get("page_views", 0),
+            "key_events": r.get("key_events", 0),
+            "avg_session_duration": r.get("avg_session_duration", 0.0),
+        })
+    return pd.DataFrame(rows)
+
+
 def normalize_ga4_pages(raw: list[dict]) -> pd.DataFrame:
     rows = []
     for r in raw:

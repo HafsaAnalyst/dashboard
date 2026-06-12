@@ -108,6 +108,53 @@ def fetch_daily_sessions(since: str, until: Optional[str] = None) -> list[dict]:
     return out
 
 
+def fetch_daily_totals(since: str, until: Optional[str] = None) -> list[dict]:
+    """Daily site-wide totals with NO segmentation dimensions (date only).
+
+    GA4 session/user metrics do NOT sum correctly across high-cardinality
+    dimensions (sessionSource × medium × country × city) — GA4 buckets low-volume
+    combinations into "(other)" so the summed total drifts from the real figure.
+    This date-only query returns the canonical site totals that match the GA4 UI.
+    Powers fact_ga4_daily (the topline SEO scorecards). Sessions / engaged
+    sessions are session-grain (additive across days); users are day-unique.
+    """
+    until = until or _today()
+    from google.analytics.data_v1beta.types import (
+        DateRange, Dimension, Metric, RunReportRequest,
+    )
+
+    req = RunReportRequest(
+        property=_property(),
+        date_ranges=[DateRange(start_date=since, end_date=until)],
+        dimensions=[Dimension(name="date")],
+        metrics=[
+            Metric(name="sessions"),
+            Metric(name="engagedSessions"),
+            Metric(name="totalUsers"),
+            Metric(name="activeUsers"),
+            Metric(name="newUsers"),
+            Metric(name="screenPageViews"),
+            Metric(name="keyEvents"),
+            Metric(name="averageSessionDuration"),
+        ],
+        limit=100000,
+    )
+    resp = _client().run_report(req)
+    out = [{
+        "date": r.dimension_values[0].value,
+        "sessions": int(r.metric_values[0].value),
+        "engaged_sessions": int(r.metric_values[1].value),
+        "total_users": int(r.metric_values[2].value),
+        "active_users": int(r.metric_values[3].value),
+        "new_users": int(r.metric_values[4].value),
+        "page_views": int(r.metric_values[5].value),
+        "key_events": int(r.metric_values[6].value),
+        "avg_session_duration": float(r.metric_values[7].value),
+    } for r in resp.rows]
+    logger.info("GA4 daily_totals [%s..%s]: %d rows", since, until, len(out))
+    return out
+
+
 def fetch_top_pages(
     since: str, until: Optional[str] = None, limit: int = 500
 ) -> list[dict]:
