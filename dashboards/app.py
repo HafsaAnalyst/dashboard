@@ -5734,7 +5734,7 @@ with tab_e1:
         _cn = run_df("vw_counsellors",
                      {"since": since.isoformat(), "until": until.isoformat(), "city": city})
         _gc = pd.DataFrame()
-        if _cn.empty:
+        if _cn.empty or not {"calendar_id", "appointments", "showed"}.issubset(_cn.columns):
             st.caption("No counsellor appointments in this window.")
         else:
             _c2name = {cid: c["name"].split(" - ")[0]
