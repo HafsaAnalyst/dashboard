@@ -577,6 +577,12 @@ def render_card(
     st.markdown(html, unsafe_allow_html=True)
 
 
+# Uniform highlight for Auto-Insights / Analysis cards: a beige ~3 shades darker
+# than the cream page background (#f3f0e9) so insights stand out evenly without
+# semantic colour coding.
+INSIGHT_BG = "#d9d2c0"
+
+
 # ---------------------------------------------------------------------
 # Scorecard metric definitions — surfaced as a hover tooltip (the small "?"
 # / native button tooltip) on every scorecard, grouped by tab.
@@ -744,7 +750,7 @@ if ts:
 fcol1, fcol2, fcol3, _ = st.columns([2, 2, 2, 4])
 with fcol1:
     period_label = st.selectbox(
-        "Period",
+        "Duration",
         ["Current month", "Last 30 days", "Last 7 days", "Custom"],
         index=0,
     )
@@ -758,7 +764,7 @@ with fcol2:
         )
 with fcol3:
     city = st.selectbox(
-        "City",
+        "Location",
         ["All", "Melbourne", "Sydney", "Others", "Unidentified"],
         index=0,
     )
@@ -3773,16 +3779,14 @@ def render_meta1_tab():
             f"**{len(waste)} campaign(s) spent ≥$50 with 0 bookings** "
             f"(${waste['spend_aud'].sum():,.0f} total) — review or pause."))
 
-    _ICL = {"good": ("rgba(77,166,255,0.12)", "#4DA6FF"),
-            "info": ("rgba(122,82,204,0.10)", "#7A52CC"),
-            "warn": ("rgba(255,77,102,0.10)", "#FF4D66")}
     if not ins:
         st.caption("Not enough prior-period data to compare.")
     def _card(lvl, txt):
-        bg, bcol = _ICL.get(lvl, _ICL["info"])
+        # Uniform highlight (no semantic colour coding): a beige ~3 shades darker
+        # than the cream page background so each insight stands out evenly.
         html = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", txt)
         st.markdown(
-            f"<div style='background:{bg};border-left:4px solid {bcol};border-radius:8px;"
+            f"<div style='background:{INSIGHT_BG};border-radius:8px;"
             f"padding:10px 14px;margin-bottom:8px;color:#1f2937;font-size:14px;'>{html}</div>",
             unsafe_allow_html=True)
 
@@ -5861,16 +5865,14 @@ with tab_e1:
                                          f"{n_total:,}) — a large untracked top-of-funnel (DMs with no form / "
                                          "no contact info). Tighten lead capture to convert these."))
 
-        _ICL = {"warn": ("rgba(255,77,102,0.10)", RED),
-                "info": ("rgba(122,82,204,0.10)", PURPLE),
-                "good": ("rgba(77,166,255,0.12)", BLUE)}
         if not insights:
             st.caption("No notable changes vs last period.")
         for lvl, txt in insights:
-            bg, br = _ICL.get(lvl, _ICL["info"])
+            # Uniform highlight (no semantic colour coding): a beige ~3 shades
+            # darker than the cream page background.
             html = _re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", txt)
             st.markdown(
-                f"<div style='background:{bg};border-left:4px solid {br};border-radius:8px;"
+                f"<div style='background:{INSIGHT_BG};border-radius:8px;"
                 f"padding:10px 14px;margin-bottom:8px;color:#1f2937;font-size:14px;'>{html}</div>",
                 unsafe_allow_html=True)
 
