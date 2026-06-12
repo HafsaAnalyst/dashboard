@@ -1,10 +1,10 @@
 name: ETL refresh
 
 # Keeps the MotherDuck database (which the live dashboard reads) fresh.
-# Runs every 3 hours, and can be triggered manually from the Actions tab.
+# Runs every hour, and can be triggered manually from the Actions tab.
 on:
   schedule:
-    - cron: "0 */3 * * *"   # every 3 hours, UTC
+    - cron: "0 * * * *"    # every hour, on the hour, UTC
   workflow_dispatch: {}      # manual "Run workflow" button
 
 # Never let two ETL runs write to MotherDuck at the same time.

@@ -5154,11 +5154,18 @@ with tab_e1:
 
         # ---- Ad spend (Meta, USD->AUD) + Revenue (GHL succeeded payments) ----
         fx = usd_to_aud()
-        _ms_cur = run_df("vw_exec_meta_spend", {"since": since.isoformat(), "until": until.isoformat()})
-        _ms_pri = run_df("vw_exec_meta_spend",
-                         {"since": prior_since.isoformat(), "until": prior_until.isoformat()})
-        spend_aud   = (float(_ms_cur["spend"].sum()) if not _ms_cur.empty else 0.0) * fx
-        p_spend_aud = (float(_ms_pri["spend"].sum()) if not _ms_pri.empty else 0.0) * fx
+        # Ad Spend uses the SAME live Meta source + Location filter as the Meta Ads
+        # tab's Spend card, so the two always match (was vw_exec_meta_spend, which
+        # ignored Location and read the stale warehouse table).
+        def _meta_spend_aud(s_from, s_to):
+            d = fetch_meta1_campaign_df(s_from, s_to)
+            if d.empty:
+                return 0.0
+            if city in ("Melbourne", "Sydney"):
+                d = d[d["account"] == city]
+            return float(d["spend"].sum()) * fx
+        spend_aud   = _meta_spend_aud(since.isoformat(), until.isoformat())
+        p_spend_aud = _meta_spend_aud(prior_since.isoformat(), prior_until.isoformat())
 
         rev_cur = run_df("vw_exec1_revenue_detail", {"since": since.isoformat(), "until": until.isoformat()})
         rev_pri = run_df("vw_exec1_revenue_detail",
