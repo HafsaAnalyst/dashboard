@@ -1830,11 +1830,13 @@ meta_ck AS (
 -- GHL "Lead Source" custom field (Meta Ads / Walk-in / Website Form / Social
 -- Media DM / Chatbot / Email Marketing) — an explicit, human/CRM-set source.
 clead AS (SELECT contact_id, lead_source FROM fact_contact_lead_source)
--- Organic Search requires an opportunity (pipeline + stage). A contact tagged
--- Organic Search with no pipeline AND no stage is not a genuine Organic Search
--- lead, so re-bucket it to 'No Activity' (which is excluded from the Leads count).
+-- Organic Search and Direct require an opportunity (pipeline + stage). A contact
+-- tagged Organic Search / Direct with no pipeline AND no stage is just untracked
+-- web traffic, not a genuine lead, so re-bucket it to 'No Activity' (which is
+-- excluded from the Leads count).
 SELECT * REPLACE (
-    CASE WHEN refined_source = 'Organic Search' AND (pipeline IS NULL OR stage IS NULL)
+    CASE WHEN refined_source IN ('Organic Search', 'Direct')
+              AND (pipeline IS NULL OR stage IS NULL)
          THEN 'No Activity' ELSE refined_source END AS refined_source
 )
 FROM (
@@ -1959,8 +1961,15 @@ SELECT
              AND (cc.channel IS NULL OR cc.channel = 'Email')                       THEN 'Direct Bookings'
         -- Agentcis = historical client migrated from Agentcis (Mar 2026 switch):
         -- a real payment but no form, no conversation, no source and no booking.
+        -- BUT a contact actively in a marketing/service funnel (L2C-* / CLT-*) is a
+        -- real (source mis-attributed) lead, not a migrated record — e.g. a TikTok
+        -- DM lead whose channel GHL never surfaced. Label those 'Unknown' (source
+        -- undetermined) so they are not counted as Agentcis migrants.
         WHEN pe.contact_id IS NOT NULL AND ls.contact_id IS NULL
-             AND (cc.channel IS NULL OR cc.channel = 'Email')                       THEN 'Agentcis'
+             AND (cc.channel IS NULL OR cc.channel = 'Email')
+           THEN CASE WHEN COALESCE(lo.pipeline_name, '') LIKE 'L2C%'
+                       OR COALESCE(lo.pipeline_name, '') LIKE 'CLT%'
+                     THEN 'Unknown' ELSE 'Agentcis' END
         -- Queries = a RAW inbound inquiry: a real 2-way conversation (DM / chat /
         -- phone), no form, not in a pipeline. An outbound-only 'Email' channel
         -- (e.g. a booking-confirmation we sent) is NOT an inquiry -> Unknown.
