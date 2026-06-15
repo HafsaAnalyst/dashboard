@@ -1012,11 +1012,17 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
 
     def _build_row(c, by_cal, weekdays, pay_lookup=None):
         cals = c["calendar_ids"]
-        appts     = sum(int(by_cal[cid]["appointments"])  for cid in cals if cid in by_cal)
-        confirmed = sum(int(by_cal[cid]["confirmed"])     for cid in cals if cid in by_cal)
-        showed    = sum(int(by_cal[cid]["showed"])        for cid in cals if cid in by_cal)
-        noshow    = sum(int(by_cal[cid]["noshow"])        for cid in cals if cid in by_cal)
-        cancelled = sum(int(by_cal[cid]["cancelled"])     for cid in cals if cid in by_cal)
+        # Defensive cell read: a malformed vw_counsellors result on the cloud has
+        # returned rows missing metric columns — default missing/NaN cells to 0 so
+        # the counsellor tables degrade gracefully instead of crashing the app.
+        def _cv(cid, col):
+            v = by_cal[cid].get(col, 0)
+            return int(v) if pd.notna(v) else 0
+        appts     = sum(_cv(cid, "appointments") for cid in cals if cid in by_cal)
+        confirmed = sum(_cv(cid, "confirmed")    for cid in cals if cid in by_cal)
+        showed    = sum(_cv(cid, "showed")       for cid in cals if cid in by_cal)
+        noshow    = sum(_cv(cid, "noshow")       for cid in cals if cid in by_cal)
+        cancelled = sum(_cv(cid, "cancelled")    for cid in cals if cid in by_cal)
         # Real payment data — succeeded transactions from GHL /payments API.
         # pay_lookup is the per-window payment dict (current vs prior).
         pay_lookup = pay_lookup if pay_lookup is not None else {}
