@@ -81,11 +81,11 @@ def fetch_campaign_insights(
         "time_range": json.dumps({"since": since, "until": until}),
         "fields": fields,
         "limit": PAGE_LIMIT,
-        "filtering": json.dumps([{
-            "field": "campaign.effective_status",
-            "operator": "IN",
-            "value": ["ACTIVE", "PAUSED", "ARCHIVED", "DELETED"],
-        }]),
+        # NO effective_status filter: the insights endpoint already returns only
+        # campaigns that had delivery in the range, and filtering on CURRENT status
+        # dropped spend from campaigns now in a status outside the listed set
+        # (common for older months) — making campaign totals under-count the true
+        # account spend. Without the filter, campaign-level == account-level total.
     }
     rows = _paginate(f"{BASE_URL}/{account_id}/insights", params)
     for r in rows:
