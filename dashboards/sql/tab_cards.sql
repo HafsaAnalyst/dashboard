@@ -1837,7 +1837,13 @@ clead AS (SELECT contact_id, lead_source FROM fact_contact_lead_source)
 SELECT * REPLACE (
     CASE WHEN refined_source IN ('Organic Search', 'Direct')
               AND (pipeline IS NULL OR stage IS NULL)
-         THEN 'No Activity' ELSE refined_source END AS refined_source
+         THEN 'No Activity' ELSE refined_source END AS refined_source,
+    -- Only count an appointment as this lead's Booking/Showed if it was created
+    -- ON OR AFTER the lead entered the cohort. An appointment created BEFORE the
+    -- lead_date is an OLD appointment (e.g. a contact who booked months ago and
+    -- only filled the form / revived now) — not a booking driven by this lead.
+    CASE WHEN appt_booked = 1 AND appt_booked_date >= lead_date THEN 1 ELSE 0 END AS appt_booked,
+    CASE WHEN appt_showed = 1 AND appt_booked_date >= lead_date THEN 1 ELSE 0 END AS appt_showed
 )
 FROM (
 SELECT
