@@ -46,6 +46,8 @@ FULL_REFRESH_START = "2024-01-01"
 INCREMENTAL_DAYS = 2  # overlap window for late-arriving data
 META_DAILY_LOOKBACK = 30  # re-fetch this many days of Meta daily spend each run
                           # (spend retro-updates; fills skipped days)
+GSC_LOOKBACK = 14         # re-fetch this many days of GSC each run (data lands
+                          # 2-3 days late and back-fills; avoids per-day gaps)
 
 logger = logging.getLogger("etl")
 
@@ -282,11 +284,16 @@ def extract_gsc(con, since: str, until: str) -> dict:
     logger.info("== GSC ==")
     summary = {}
     total = 0
-    # device limit must be high enough to cover (devices × dates) without truncation,
-    # because agg_daily_kpis rolls up GSC totals from this dimension.
-    for dim, limit in [("query", 5000), ("page", 5000), ("country", 1000), ("device", 5000)]:
+    # GSC data lands 2-3 days late and back-fills retroactively — longer than the
+    # 2-day incremental overlap, so days otherwise fall through the cracks (gaps).
+    # Re-fetch a wider window each run so lagging days are captured and corrected.
+    gsc_since = min(since, (datetime.now() - timedelta(days=GSC_LOOKBACK)).strftime("%Y-%m-%d"))
+    # query/page limits raised to cover the wider window without truncation; the
+    # site-wide totals (vw_gsc_tab_totals) use the 'device' dimension, which is
+    # tiny (≤ devices × dates) and never truncates.
+    for dim, limit in [("query", 25000), ("page", 25000), ("country", 1000), ("device", 100)]:
         try:
-            rows = gsc.fetch_search_analytics(since, until, dim, limit)
+            rows = gsc.fetch_search_analytics(gsc_since, until, dim, limit)
             df = normalize.normalize_gsc(rows)
             n = upsert_df(con, "fact_gsc_queries", df, "gsc_key")
             total += n
