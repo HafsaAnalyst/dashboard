@@ -3218,6 +3218,44 @@ def fetch_meta1_campaign_df(since_s, until_s):
     return pd.DataFrame(rows)
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_meta_campaign_accounts() -> dict:
+    """Complete {normalised_campaign_key: account_label} map across BOTH ad
+    accounts, from the live campaigns list (ALL statuses — incl. archived/deleted).
+    Lets a GHL lead's utm_campaign resolve to Melbourne / Sydney even for an OLD
+    campaign that stopped delivering (so it isn't in the recent insights/warehouse)
+    but still produced a recent lead."""
+    import os as _os, re as _re
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    try:
+        import connectors.meta as _meta
+    except Exception:
+        return {}
+
+    def _k(s):
+        s = str(s or "").lower()
+        for a, b in (("%7c", "|"), ("%2f", "/"), ("%2b", "+"), ("%20", " "),
+                     ("%26", "&"), ("+", " ")):
+            s = s.replace(a, b)
+        return _re.sub(r"[^a-z0-9]", "", s)
+
+    out = {}
+    for label, env in (("Melbourne", "META_MELBOURNE_AD_ACCOUNT_ID"),
+                       ("Sydney", "META_SYDNEY_AD_ACCOUNT_ID")):
+        acct = _os.getenv(env)
+        if not acct:
+            continue
+        try:
+            for c in _meta.fetch_campaigns(acct):
+                nm = c.get("name")
+                if nm:
+                    out[_k(nm)] = label
+        except Exception:
+            pass
+    return out
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def _meta1_lifetime_perf(until_s, fx):
     """Lifetime per-campaign performance (all-time Meta spend + all-time GHL
@@ -3298,6 +3336,18 @@ def render_meta1_tab():
         camp_city = {_ckey(n): lbl for n, lbl in _cc_rows if lbl}
     except Exception:
         camp_city = {}
+    # Complete campaign → account map from the live campaigns list (ALL statuses),
+    # so OLD campaigns that didn't deliver in any fetched window (absent from the
+    # warehouse/insights maps) still resolve to Melbourne / Sydney.
+    camp_all_live = fetch_meta_campaign_accounts()
+
+    def _acct_of(keys):
+        """Resolve each campaign key to its ad account: warehouse → live current
+        window → full live campaign list → '—'."""
+        return (keys.map(camp_city)
+                .fillna(keys.map(camp_acct))
+                .fillna(keys.map(camp_all_live))
+                .fillna("—"))
 
     def _ps(df, cids, mkeys=None):
         # Meta cohort = exactly Executive_1's Paid Social (the view now classifies
@@ -3306,10 +3356,7 @@ def render_meta1_tab():
         d["campaign"] = d["campaign"].fillna("(no campaign)").replace("", "(no campaign)")
         d["_k"] = d["campaign"].map(_ckey)
         d["is_conv"] = d["contact_id"].isin(cids).astype(int)
-        # city from the campaign's ad account: all-time warehouse map first
-        # (covers campaigns not delivering this window), then the live map.
-        d["account"] = (d["_k"].map(camp_city)
-                        .fillna(d["_k"].map(camp_acct)).fillna("—"))
+        d["account"] = _acct_of(d["_k"])
         return d
     ps, psp = _ps(e1, conv_ids), _ps(e1p, conv_ids_p)
 
@@ -3375,7 +3422,10 @@ def render_meta1_tab():
     # Started drill-down (built below), never in the Leads / other tables.
     socq = e1[(e1["refined_source"] == "Queries")
               & (e1["dm_channel"].isin(["Facebook", "Instagram", "WhatsApp", "TikTok"]))]
-    camp["account"] = camp["account"].fillna(camp["_k"].map(camp_acct)).fillna("—")
+    camp["account"] = (camp["account"]
+                       .fillna(camp["_k"].map(camp_city))
+                       .fillna(camp["_k"].map(camp_acct))
+                       .fillna(camp["_k"].map(camp_all_live)).fillna("—"))
     camp["spend_aud"] = camp["spend"] * fx
     camp["cpl"] = camp.apply(lambda r: r.spend_aud / r.leads if r.leads else None, axis=1)
     camp["booking_rate"] = camp.apply(lambda r: r.booked / r.leads if r.leads else None, axis=1)

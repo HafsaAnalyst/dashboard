@@ -118,6 +118,29 @@ def fetch_daily_insights(
     return rows
 
 
+def fetch_campaigns(account_id: str) -> list[dict]:
+    """All campaigns in an ad account (id + name + status), regardless of whether
+    they delivered recently — including archived/deleted. Used to map a GHL lead's
+    utm_campaign to its ad account (Melbourne / Sydney) even for old campaigns that
+    a lead references long after the campaign stopped delivering."""
+    params = {
+        "access_token": _token(),
+        "fields": "id,name,effective_status",
+        "limit": PAGE_LIMIT,
+        # include every status so old/paused/archived/deleted campaigns are listed
+        "filtering": json.dumps([{
+            "field": "campaign.effective_status",
+            "operator": "IN",
+            "value": ["ACTIVE", "PAUSED", "ARCHIVED", "DELETED", "IN_PROCESS",
+                      "WITH_ISSUES", "CAMPAIGN_PAUSED", "DISAPPROVED",
+                      "PENDING_REVIEW", "PREAPPROVED", "PENDING_BILLING_INFO"],
+        }]),
+    }
+    rows = _paginate(f"{BASE_URL}/{account_id}/campaigns", params)
+    logger.info("Meta campaigns %s: %d", account_id, len(rows))
+    return rows
+
+
 def fetch_adset_optimization(account_id: str) -> list[dict]:
     """Pull optimization_goal + promoted_object per ad set so the ETL can
     map a campaign to its 'Results' event when needed."""
