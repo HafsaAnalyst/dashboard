@@ -388,12 +388,30 @@ def forecast_metrics(grain: str, fc_until_s: str, n_periods: int, fx: float) -> 
         ).fetchdf()["contact_id"])
     until_ts = pd.Timestamp(fc_until_s)
     periods = list(pd.period_range(start=pd.Timestamp("2025-10-01"), end=until_ts, freq=freq))[-n_periods:]
-    spd = run_df("vw_forecast_spend", {"since": "2025-10-01", "until": fc_until_s})
-    if not spd.empty:
-        spd = spd.assign(P=pd.to_datetime(spd["spend_date"]).dt.to_period(freq))
-        spend_by_p = spd.groupby("P")["spend"].sum()
-    else:
+    # Ad Spend per period from the SAME live Meta source the Executive / Meta tabs
+    # use, so the current period matches the Executive 'Ad Spend' card exactly. The
+    # warehouse (vw_forecast_spend) lags live by the most recent days, which caused
+    # the mismatch. Fall back to the warehouse only if the live API is unavailable.
+    spend_by_p = pd.Series(dtype=float)
+    try:
+        import connectors.meta as _meta
+        _rows = []
+        for _acct in (os.getenv("META_MELBOURNE_AD_ACCOUNT_ID"),
+                      os.getenv("META_SYDNEY_AD_ACCOUNT_ID")):
+            if _acct:
+                _rows += [{"d": r.get("date_start"), "s": float(r.get("spend") or 0)}
+                          for r in _meta.fetch_daily_insights(_acct, "2025-10-01", fc_until_s)]
+        if _rows:
+            _sdf = pd.DataFrame(_rows)
+            spend_by_p = (_sdf.assign(P=pd.to_datetime(_sdf["d"]).dt.to_period(freq))
+                          .groupby("P")["s"].sum())
+    except Exception:
         spend_by_p = pd.Series(dtype=float)
+    if spend_by_p.empty:
+        spd = run_df("vw_forecast_spend", {"since": "2025-10-01", "until": fc_until_s})
+        if not spd.empty:
+            spend_by_p = (spd.assign(P=pd.to_datetime(spd["spend_date"]).dt.to_period(freq))
+                          .groupby("P")["spend"].sum())
     rows = []
     for P in periods:
         s = P.start_time.date().isoformat()
