@@ -935,6 +935,12 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
     couns_active = st.session_state["couns_card"]
 
     # ---- Pull per-calendar appointments for current + prior windows ----
+    # Track whether vw_counsellors came back MANGLED (rows present but expected
+    # columns missing — a cloud serialization quirk). In that case appointment
+    # metrics fall to 0; we surface a notice so 0s aren't mistaken for real data.
+    _COUNS_COLS = {"calendar_id", "appointments", "confirmed", "showed", "noshow", "cancelled"}
+    _couns_unavailable = [False]   # mutable flag (this code runs at module scope)
+
     def _by_cal(s, u):
         # run_df is cached (10 min) so these two calls don't re-hit MotherDuck
         # on every rerun / tab switch.
@@ -943,6 +949,9 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
         # Defensive: this runs at module scope, so a malformed result here would
         # crash EVERY tab, not just Counsellors. If the expected key column is
         # absent, degrade to an empty mapping rather than taking the app down.
+        if not df.empty and not _COUNS_COLS.issubset(df.columns):
+            _couns_unavailable[0] = True   # rows present but columns mangled
+            return {}
         if df.empty or "calendar_id" not in df.columns:
             return {}
         return {r["calendar_id"]: r for _, r in df.iterrows()}
@@ -1823,6 +1832,13 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
 
     # ---- Counsellor Performance Matrix (single combined table) ----
     st.markdown(f"### Counsellor Performance Matrix — {couns_filter_label}")
+    if _couns_unavailable[0]:
+        st.warning(
+            "⚠️ Appointment data is temporarily unavailable (the data source "
+            "returned an unexpected result), so **Appointments / Confirmed / Showed "
+            "/ No Show / Cancelled may read 0** here. Payments and Conversions are "
+            "unaffected. Please refresh in a moment — if it persists, reboot the app."
+        )
     # Inherits the global City filter at the top of the page — no separate
     # control here. rows_cur is already filtered to the picked city.
     matrix_city = couns_filter_label
