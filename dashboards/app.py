@@ -196,6 +196,35 @@ def get_con() -> duckdb.DuckDBPyConnection:
     return duckdb.connect(str(DB_PATH), read_only=True)
 
 
+# Transient MotherDuck server errors (timeouts / UNAVAILABLE / DEADLINE_EXCEEDED)
+# would otherwise crash the whole app on a single blip. Retry a few times with a
+# short backoff, dropping the (possibly stale) cached connection between tries.
+_DB_TRANSIENT = ("deadline_exceeded", "unavailable", "timed out", "timeout",
+                 "could not connect", "resource_exhausted", "connection reset",
+                 "rpc", "503", "try again later")
+
+
+def db_exec(sql: str, params=None, retries: int = 4):
+    """db_exec(...) with retry on transient MotherDuck errors. Returns
+    the executed relation (callers keep their .fetchall()/.fetchdf())."""
+    import time as _time
+    last = None
+    for i in range(retries):
+        try:
+            con = get_con()
+            return con.execute(sql, params) if params is not None else con.execute(sql)
+        except Exception as e:
+            last = e
+            if i == retries - 1 or not any(t in str(e).lower() for t in _DB_TRANSIENT):
+                raise
+            try:
+                get_con.clear()   # force a fresh connection on the next attempt
+            except Exception:
+                pass
+            _time.sleep(0.5 * (i + 1))
+    raise last
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def _all_paid_charges(today_s: str) -> "pd.DataFrame":
     """Every succeeded Stripe charge since 2024 (ANY date). A consultation can be
@@ -233,7 +262,7 @@ def paid_consults_detail(since_s: str, until_s: str) -> "pd.DataFrame":
     if not paid_cals:
         return pd.DataFrame()
     ph = ",".join(["?"] * len(paid_cals))
-    ap = get_con().execute(
+    ap = db_exec(
         f"SELECT contact_id, calendar_id, CAST(date_added AS DATE) ad, start_time, "
         f"COALESCE(title,'') title FROM fact_appointments "
         f"WHERE calendar_id IN ({ph}) AND contact_id IS NOT NULL "
@@ -328,7 +357,7 @@ def _fetch_view_df(view: str, binds_key: tuple) -> pd.DataFrame:
         return pd.DataFrame()
     binds = dict(binds_key)
     needed = {k: v for k, v in binds.items() if ("$" + k) in body}
-    df = get_con().execute(body, needed).fetchdf()
+    df = db_exec(body, needed).fetchdf()
     return df if df is not None else pd.DataFrame()
 
 
@@ -381,7 +410,7 @@ def forecast_metrics(grain: str, fc_until_s: str, n_periods: int, fx: float) -> 
     cohort showed; MARA = reached L2C-VISA 'MARA Appointment Booked'; COE Received
     = the Executive_1 **Conversions** count for the period."""
     freq = {"Month": "M", "Week": "W", "Day": "D"}[grain]
-    mara_ids = set(get_con().execute(
+    mara_ids = set(db_exec(
         "SELECT DISTINCT o.contact_id FROM fact_opportunities o "
         "JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id AND p.pipeline_name = 'L2C - VISA' "
         "JOIN dim_stages st ON st.stage_id = o.stage_id WHERE st.stage_order >= 1"
@@ -440,7 +469,7 @@ def forecast_metrics(grain: str, fc_until_s: str, n_periods: int, fx: float) -> 
 
 def last_refreshed() -> datetime | None:
     try:
-        ts = get_con().execute(
+        ts = db_exec(
             "SELECT MAX(last_refreshed) FROM agg_daily_kpis"
         ).fetchone()[0]
         return ts
@@ -803,6 +832,28 @@ st.caption(
     f"Comparison: {prior_since.strftime('%b %d')} – {prior_until.strftime('%b %d')}"
 )
 
+# ---- Data-source health check ----
+# The whole dashboard reads from MotherDuck. If the connection is down (plan/trial
+# lapsed, or a transient outage), show one clear message and stop — instead of a
+# cryptic redacted DuckDB error on every tab.
+try:
+    db_exec("SELECT 1")
+except Exception as _dberr:
+    _m = str(_dberr).lower()
+    if "trial has ended" in _m or "select from" in _m or "restore access" in _m:
+        st.error(
+            "⚠️ **Data source unavailable — the MotherDuck plan has lapsed.**\n\n"
+            "Every dashboard metric reads from MotherDuck, and access is currently "
+            "blocked. An admin needs to choose a plan (the **Free** tier is enough) "
+            "at **https://app.motherduck.com** to restore the dashboard."
+        )
+    else:
+        st.error(
+            "⚠️ **Data source (MotherDuck) is temporarily unavailable.** Please "
+            "refresh in a moment. If it persists, check **https://app.motherduck.com**."
+        )
+    st.stop()
+
 
 # ---------------------------------------------------------------------
 # Tabs — Executive active, others placeholder
@@ -940,7 +991,7 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
     _pipe_map  = dict(zip(_csrc["contact_id"], _csrc["pipeline"]))         if _csrc_ok else {}
     _stage_map = dict(zip(_csrc["contact_id"], _csrc["stage"]))            if _csrc_ok else {}
     # actual calendar name (e.g. "Nasir Nawaz - MARA Certified - Online")
-    _cal_name_map = dict(get_con().execute(
+    _cal_name_map = dict(db_exec(
         "SELECT calendar_id, calendar_name FROM dim_calendars").fetchall())
 
     def _exec_src(frame):
@@ -1944,7 +1995,7 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
                     """
                     try:
                         cids = rows_p["contact_id"].dropna().unique().tolist()
-                        opp_df = get_con().execute(opp_sql, [cids]).fetchdf()
+                        opp_df = db_exec(opp_sql, [cids]).fetchdf()
                     except Exception:
                         opp_df = pd.DataFrame(columns=["contact_id", "pipeline_name", "stage_name", "status"])
                     rows_p = rows_p.merge(opp_df, on="contact_id", how="left")
@@ -1963,7 +2014,7 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
                           AND CAST(created_at AS DATE) BETWEEN ? AND ?
                         GROUP BY contact_id
                         """
-                        pay_df_drill = get_con().execute(
+                        pay_df_drill = db_exec(
                             pay_q, [cids, since.isoformat(), until.isoformat()]
                         ).fetchdf()
                     except Exception:
@@ -2482,7 +2533,7 @@ section[data-testid="stMain"] [data-testid="stButton"] > button > div > p{
     # Payments per campaign (from the cached JSON pulled by the report tool)
     pay_path = ROOT.parent / "_all_payments.json"
     paid_contacts_by_camp, paid_amt_by_camp = {}, {}
-    cls_map = dict(get_con().execute(
+    cls_map = dict(db_exec(
         "SELECT contact_id, latest_source_campaign FROM fact_contact_latest_source").fetchall())
     if pay_path.exists():
         try:
@@ -2689,7 +2740,7 @@ section[data-testid="stMain"] [data-testid="stButton"] > button > div > p{
                 ORDER BY o.created_at DESC
                 """
                 try:
-                    opp_drill = get_con().execute(opp_q, [picked_campaign]).fetchdf()
+                    opp_drill = db_exec(opp_q, [picked_campaign]).fetchdf()
                 except Exception as e:
                     st.error(f"opps query failed: {e}")
                     opp_drill = pd.DataFrame()
@@ -3272,7 +3323,7 @@ def _meta1_lifetime_perf(until_s, fx):
     e["_k"] = e["campaign"].fillna("").map(ck)
     g = e.groupby("_k").agg(leads=("contact_id", "count"),
                             booked=("appt_booked", "sum"), showed=("appt_showed", "sum"))
-    md = get_con().execute("SELECT campaign_name, COALESCE(SUM(spend),0) sp FROM "
+    md = db_exec("SELECT campaign_name, COALESCE(SUM(spend),0) sp FROM "
                            "fact_meta_daily WHERE campaign_name IS NOT NULL GROUP BY 1").fetchdf()
     msp = {}
     for _, rr in md.iterrows():
@@ -3328,7 +3379,7 @@ def render_meta1_tab():
     # whose campaign didn't deliver in THIS window is still attributed to its ad
     # account. account_label is already 'Melbourne' / 'Sydney'.
     try:
-        _cc_rows = get_con().execute(
+        _cc_rows = db_exec(
             "SELECT DISTINCT campaign_name, account_label FROM ("
             "  SELECT campaign_name, account_label FROM fact_meta_daily "
             "  UNION ALL SELECT campaign_name, account_label FROM fact_meta_insights) "
@@ -4024,7 +4075,7 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
         ids = df["contact_id"].dropna().unique().tolist()
         cmap = {}
         if ids:
-            la = get_con().execute(
+            la = db_exec(
                 "SELECT contact_id, calendar_id FROM ("
                 " SELECT contact_id, calendar_id, ROW_NUMBER() OVER "
                 "   (PARTITION BY contact_id ORDER BY start_time DESC) rn "
@@ -4053,7 +4104,7 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
     os_pri = _seo_attrib_city(_seo_organic(prior_since.isoformat(), prior_until.isoformat()))
     # "Form" / detailed source = the GHL 'Latest Source' custom field value
     # (e.g. "Sydney City Page"), kept in fact_contact_latest_source.
-    _lsv_map = dict(get_con().execute(
+    _lsv_map = dict(db_exec(
         "SELECT contact_id, latest_source_value FROM fact_contact_latest_source").fetchall())
     wl_cur = _seo_percity(os_cur)
     wl_pri = _seo_percity(os_pri)
@@ -4680,7 +4731,7 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
         _ids = os_cur["contact_id"].dropna().unique().tolist()
         _pgmap = {}
         if _ids:
-            _subs = get_con().execute(
+            _subs = db_exec(
                 "SELECT contact_id, pp FROM ("
                 " SELECT contact_id, LOWER(REGEXP_REPLACE(COALESCE(page_path,''),'/$','')) AS pp, "
                 "        ROW_NUMBER() OVER (PARTITION BY contact_id ORDER BY submitted_at DESC) rn "
