@@ -836,8 +836,11 @@ st.caption(
 # The whole dashboard reads from MotherDuck. If the connection is down (plan/trial
 # lapsed, or a transient outage), show one clear message and stop — instead of a
 # cryptic redacted DuckDB error on every tab.
+# NB: must query a REAL table — 'SELECT 1' is a constant DuckDB evaluates locally
+# WITHOUT contacting the MotherDuck server, so it can't detect the server being
+# down. Reading dim_calendars forces an actual server round-trip.
 try:
-    db_exec("SELECT 1")
+    db_exec("SELECT 1 FROM dim_calendars LIMIT 1").fetchall()
 except Exception as _dberr:
     _m = str(_dberr).lower()
     if "trial has ended" in _m or "select from" in _m or "restore access" in _m:
