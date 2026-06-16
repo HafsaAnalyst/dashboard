@@ -5741,8 +5741,11 @@ with tab_e1:
                     st.session_state["e1_card"] = name
                     _e1_modal()
 
-        sub = (f"{n_new:,} created · {n_rev:,} revived"
-               + (f" · {n_bookonly:,} booked-in" if n_bookonly else ""))
+        # Split Leads by acquisition channel: Paid Social (Meta) vs Organic
+        # (every other source).
+        n_meta_leads = int((leads_df["refined_source"] == "Paid Social").sum())
+        n_organic_leads = n_leads - n_meta_leads
+        sub = f"{n_meta_leads:,} Paid Social · {n_organic_leads:,} Organic"
         kc = st.columns(5)
         _e1_scorecard(kc[0], "Leads", f"{n_leads:,}", sub,
                       _delta_md(n_leads, p_leads, higher_is_better=True, fmt="pct"))
