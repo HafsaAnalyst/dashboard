@@ -2200,13 +2200,21 @@ LEFT JOIN lf ON lf.contact_id = pay.contact_id AND lf.rn = 1;
 -- =====================================================================
 -- FOLLOWER PERFORMANCE — presales agents (GHL opportunity "followers")
 -- =====================================================================
--- "Addressed" = the opportunity's updated_at falls in [since, until] (any
--- activity: a call/note/follow-up or a stage move). Stage columns bucket the
--- addressed opps by their CURRENT stage; lost/open are by current status.
--- Binds: $since, $until (AEST). One row per follower.
+-- "Addressed" = ANY activity on the opp's lead within [since, until] (AEST):
+--   * the opportunity changed (updated_at / last stage or status change), OR
+--   * the contact had a conversation activity (call / SMS / DM / email).
+-- A logged CALL does NOT bump the opportunity's updated_at, so we must also look
+-- at the contact's conversation activity — otherwise an old lead followed-up via
+-- a call (but not moved) would be missed. Stage columns bucket the addressed opps
+-- by their CURRENT stage; lost/open by current status. Binds: $since, $until.
 -- ---------------------------------------------------------------------
 CREATE OR REPLACE VIEW vw_follower_performance AS
-WITH addressed AS (
+WITH conv_act AS (
+    SELECT contact_id, MAX(last_message_at) AS last_activity
+    FROM fact_conversations WHERE contact_id IS NOT NULL
+    GROUP BY contact_id
+),
+addressed AS (
     SELECT f.follower_user_id,
            o.opportunity_id,
            LOWER(COALESCE(o.status, ''))      AS status,
@@ -2214,7 +2222,11 @@ WITH addressed AS (
     FROM fact_opportunity_followers f
     JOIN fact_opportunities o ON o.opportunity_id = f.opportunity_id
     LEFT JOIN dim_stages st ON st.stage_id = o.stage_id
-    WHERE CAST(o.updated_at + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
+    LEFT JOIN conv_act ca ON ca.contact_id = o.contact_id
+    WHERE CAST(o.updated_at            + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
+       OR CAST(o.last_stage_change_at  + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
+       OR CAST(o.last_status_change_at + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
+       OR CAST(ca.last_activity        + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
 )
 SELECT
     COALESCE(u.full_name, a.follower_user_id)                  AS follower,
@@ -2238,6 +2250,11 @@ ORDER BY total_opps DESC;
 -- Binds: $since, $until. The app filters to the picked follower and adds the
 -- Source (refined_source) + notes from vw_exec1_lead_detail by contact_id.
 CREATE OR REPLACE VIEW vw_follower_detail AS
+WITH conv_act AS (
+    SELECT contact_id, MAX(last_message_at) AS last_activity
+    FROM fact_conversations WHERE contact_id IS NOT NULL
+    GROUP BY contact_id
+)
 SELECT
     COALESCE(u.full_name, f.follower_user_id) AS follower,
     o.contact_id,
@@ -2248,11 +2265,18 @@ SELECT
     st.stage_name      AS stage,
     o.status,
     o.opportunity_name AS opportunity,
-    CAST(o.updated_at + INTERVAL 10 HOUR AS DATE) AS last_update
+    -- Last touch = the most recent of the opp's own update and the contact's
+    -- conversation activity (so a call shows even when the opp didn't move).
+    CAST(GREATEST(o.updated_at, COALESCE(ca.last_activity, o.updated_at))
+         + INTERVAL 10 HOUR AS DATE) AS last_update
 FROM fact_opportunity_followers f
 JOIN fact_opportunities o ON o.opportunity_id = f.opportunity_id
 LEFT JOIN dim_stages st ON st.stage_id = o.stage_id
 LEFT JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id
 LEFT JOIN dim_users u ON u.user_id = f.follower_user_id
 LEFT JOIN fact_contacts c ON c.contact_id = o.contact_id
-WHERE CAST(o.updated_at + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until;
+LEFT JOIN conv_act ca ON ca.contact_id = o.contact_id
+WHERE CAST(o.updated_at            + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
+   OR CAST(o.last_stage_change_at  + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
+   OR CAST(o.last_status_change_at + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
+   OR CAST(ca.last_activity        + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until;

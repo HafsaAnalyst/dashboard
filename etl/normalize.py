@@ -144,6 +144,21 @@ def _ts(value: Any) -> Optional[pd.Timestamp]:
         return None
 
 
+def _ts_flex(value: Any) -> Optional[pd.Timestamp]:
+    """Like _ts but handles GHL fields that come as a Unix MILLISECONDS epoch
+    (e.g. conversation lastMessageDate/dateAdded = 1779277972528). A bare integer
+    passed to pd.to_datetime is read as NANOSECONDS → ~1970, so route numeric
+    values through unit='ms'."""
+    if value is None or value == "":
+        return None
+    try:
+        if isinstance(value, (int, float)) or (isinstance(value, str) and value.strip().isdigit()):
+            return pd.to_datetime(int(value), unit="ms", utc=True)
+        return pd.to_datetime(value, utc=True, errors="coerce")
+    except Exception:
+        return None
+
+
 def _to_str(v: Any) -> Optional[str]:
     if v is None:
         return None
@@ -312,8 +327,8 @@ def normalize_conversations(raw: list[dict]) -> pd.DataFrame:
             "channel":           channel_from_conversation(c),
             "conv_type":         c.get("type"),
             "last_message_type": c.get("lastMessageType"),
-            "last_message_at":   _ts(c.get("lastMessageDate")),
-            "date_added":        _ts(c.get("dateAdded")),
+            "last_message_at":   _ts_flex(c.get("lastMessageDate")),
+            "date_added":        _ts_flex(c.get("dateAdded")),
         })
     df = pd.DataFrame(rows)
     if not df.empty:
