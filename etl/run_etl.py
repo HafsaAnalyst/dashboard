@@ -149,6 +149,22 @@ def extract_ghl(con, since: str, until: str) -> dict:
         upsert_df(con, "fact_opportunities", opps_df, "opportunity_id")
         summary["fact_opportunities"] = len(opps_df)
 
+        # Opportunity followers (presales agents). Replace the follower rows for
+        # the opps in THIS batch (delete-then-insert) so follower changes — and
+        # removals — are reflected, not just additions.
+        if not opps_df.empty:
+            con.register("_opp_batch", opps_df[["opportunity_id"]])
+            con.execute("DELETE FROM fact_opportunity_followers WHERE opportunity_id "
+                        "IN (SELECT opportunity_id FROM _opp_batch)")
+            con.unregister("_opp_batch")
+            foll_df = normalize.normalize_opportunity_followers(opps_raw)
+            if not foll_df.empty:
+                con.register("_foll_batch", foll_df)
+                con.execute("INSERT INTO fact_opportunity_followers "
+                            "SELECT opportunity_id, follower_user_id FROM _foll_batch")
+                con.unregister("_foll_batch")
+            summary["fact_opportunity_followers"] = len(foll_df)
+
         # Appointments — slowest GHL call (per-calendar pagination)
         appts_raw = ghl.fetch_appointments(since, until)
         cal_to_couns = dict(zip(dim_cal_df["calendar_id"], dim_cal_df["counsellor_id"]))

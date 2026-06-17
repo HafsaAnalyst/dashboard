@@ -121,6 +121,17 @@ CREATE TABLE IF NOT EXISTS fact_opportunities (
     country                 VARCHAR,
     city                    VARCHAR
 );
+ALTER TABLE fact_opportunities ADD COLUMN IF NOT EXISTS last_stage_change_at  TIMESTAMP;
+ALTER TABLE fact_opportunities ADD COLUMN IF NOT EXISTS last_status_change_at TIMESTAMP;
+
+-- Grain: 1 row per (opportunity, follower user). GHL opportunities carry a
+-- `followers` array (the presales agents working the lead, distinct from the
+-- single assigned owner). Drives the Follower Performance tab.
+CREATE TABLE IF NOT EXISTS fact_opportunity_followers (
+    opportunity_id    VARCHAR,
+    follower_user_id  VARCHAR,
+    PRIMARY KEY (opportunity_id, follower_user_id)
+);
 
 -- Grain: 1 row per GHL calendar event (appointment).
 -- canonical_outcome bucketises GHL's appointmentStatus into 4 stable values:

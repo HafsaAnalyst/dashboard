@@ -2195,3 +2195,64 @@ SELECT c.email,
 FROM pay
 JOIN fact_contacts c ON c.contact_id = pay.contact_id
 LEFT JOIN lf ON lf.contact_id = pay.contact_id AND lf.rn = 1;
+
+
+-- =====================================================================
+-- FOLLOWER PERFORMANCE — presales agents (GHL opportunity "followers")
+-- =====================================================================
+-- "Addressed" = the opportunity's updated_at falls in [since, until] (any
+-- activity: a call/note/follow-up or a stage move). Stage columns bucket the
+-- addressed opps by their CURRENT stage; lost/open are by current status.
+-- Binds: $since, $until (AEST). One row per follower.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE VIEW vw_follower_performance AS
+WITH addressed AS (
+    SELECT f.follower_user_id,
+           o.opportunity_id,
+           LOWER(COALESCE(o.status, ''))      AS status,
+           LOWER(COALESCE(st.stage_name, '')) AS stage
+    FROM fact_opportunity_followers f
+    JOIN fact_opportunities o ON o.opportunity_id = f.opportunity_id
+    LEFT JOIN dim_stages st ON st.stage_id = o.stage_id
+    WHERE CAST(o.updated_at + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
+)
+SELECT
+    COALESCE(u.full_name, a.follower_user_id)                  AS follower,
+    COUNT(*)                                                   AS total_opps,
+    COUNT(*) FILTER (WHERE a.stage LIKE 'new lead%')           AS new_leads,
+    COUNT(*) FILTER (WHERE a.stage LIKE 'pre sales (1)%')      AS presales_1,
+    COUNT(*) FILTER (WHERE a.stage LIKE 'pre sales (2)%')      AS presales_2,
+    COUNT(*) FILTER (WHERE a.stage LIKE 'booking link%')       AS booking_link_shared,
+    COUNT(*) FILTER (WHERE a.stage LIKE 'post consultation%')  AS post_consultation,
+    COUNT(*) FILTER (WHERE a.stage LIKE 'no show%')            AS no_show,
+    COUNT(*) FILTER (WHERE a.status = 'lost')                  AS lost,
+    COUNT(*) FILTER (WHERE a.status = 'open')                  AS open_opps
+FROM addressed a
+LEFT JOIN dim_users u ON u.user_id = a.follower_user_id
+GROUP BY 1
+HAVING COUNT(*) > 0
+ORDER BY total_opps DESC;
+
+
+-- Per-contact detail for one follower's addressed opps (drill-down).
+-- Binds: $since, $until. The app filters to the picked follower and adds the
+-- Source (refined_source) + notes from vw_exec1_lead_detail by contact_id.
+CREATE OR REPLACE VIEW vw_follower_detail AS
+SELECT
+    COALESCE(u.full_name, f.follower_user_id) AS follower,
+    o.contact_id,
+    c.email,
+    c.contact_name,
+    c.phone,
+    p.pipeline_name    AS pipeline,
+    st.stage_name      AS stage,
+    o.status,
+    o.opportunity_name AS opportunity,
+    CAST(o.updated_at + INTERVAL 10 HOUR AS DATE) AS last_update
+FROM fact_opportunity_followers f
+JOIN fact_opportunities o ON o.opportunity_id = f.opportunity_id
+LEFT JOIN dim_stages st ON st.stage_id = o.stage_id
+LEFT JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id
+LEFT JOIN dim_users u ON u.user_id = f.follower_user_id
+LEFT JOIN fact_contacts c ON c.contact_id = o.contact_id
+WHERE CAST(o.updated_at + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until;

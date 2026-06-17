@@ -346,6 +346,8 @@ def normalize_opportunities(raw: list[dict], stage_name_by_id: dict) -> pd.DataF
             "days_in_pipeline": int(o.get("days") or 0),
             "created_at": _ts(o.get("createdAt")),
             "updated_at": _ts(o.get("updatedAt")),
+            "last_stage_change_at": _ts(o.get("lastStageChangeAt")),
+            "last_status_change_at": _ts(o.get("lastStatusChangeAt")),
             "visa_type": None,  # not natively in opp; inherits from contact via join
             "country": contact.get("country") or o.get("country"),
             "city": contact.get("city") or o.get("city"),
@@ -353,6 +355,24 @@ def normalize_opportunities(raw: list[dict], stage_name_by_id: dict) -> pd.DataF
     df = pd.DataFrame(rows)
     if not df.empty:
         df = df.dropna(subset=["opportunity_id"]).drop_duplicates(subset=["opportunity_id"])
+    return df
+
+
+def normalize_opportunity_followers(raw: list[dict]) -> pd.DataFrame:
+    """fact_opportunity_followers — one row per (opportunity_id, follower_user_id),
+    exploded from each opportunity's `followers` array."""
+    rows = []
+    for o in raw:
+        oid = _to_str(o.get("id"))
+        if not oid:
+            continue
+        for uid in (o.get("followers") or []):
+            uid = _to_str(uid)
+            if uid:
+                rows.append({"opportunity_id": oid, "follower_user_id": uid})
+    df = pd.DataFrame(rows, columns=["opportunity_id", "follower_user_id"])
+    if not df.empty:
+        df = df.drop_duplicates()
     return df
 
 

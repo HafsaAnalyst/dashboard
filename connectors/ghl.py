@@ -138,8 +138,14 @@ def fetch_contacts(since: str, until: Optional[str] = None) -> list[dict]:
 
 
 def fetch_opportunities(since: str, until: Optional[str] = None) -> list[dict]:
-    """Opportunities with createdAt in [since, until]."""
+    """Opportunities CREATED or UPDATED in [since, until]. Each item keeps its
+    `followers`/`assignedTo`/`lastStageChangeAt`/`lastStatusChangeAt` fields."""
     until = until or _today()
+    # Results come back newest-CREATED first, so to catch OLD opps that were
+    # UPDATED inside the window (active presales follow-up) we scan ~180 days
+    # past `since` before stopping. A --full run passes an early `since`, so it
+    # still scans everything.
+    scan_floor = (datetime.strptime(since, "%Y-%m-%d") - timedelta(days=180)).strftime("%Y-%m-%d")
     all_items: list[dict] = []
     start_after, start_after_id = None, None
     pages = 0
@@ -166,15 +172,16 @@ def fetch_opportunities(since: str, until: Optional[str] = None) -> list[dict]:
         start_after_id = meta.get("nextPageId") or meta.get("startAfterId")
         pages += 1
         oldest = items[-1].get("createdAt", "")[:10]
-        if oldest and oldest < since:
+        if oldest and oldest < scan_floor:
             break
         if not start_after_id:
             break
     in_range = [
         o for o in all_items
-        if since <= (o.get("createdAt") or "")[:10] <= until
+        if (since <= (o.get("createdAt") or "")[:10] <= until)
+        or (since <= (o.get("updatedAt") or "")[:10] <= until)
     ]
-    logger.info("GHL opportunities: scanned %d in %d pages, %d in [%s..%s]",
+    logger.info("GHL opportunities: scanned %d in %d pages, %d created/updated in [%s..%s]",
                 len(all_items), pages, len(in_range), since, until)
     return in_range
 

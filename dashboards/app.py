@@ -863,9 +863,10 @@ except Exception as _dberr:
 # ---------------------------------------------------------------------
 
 (tab_e1, tab_meta1, tab_funnels1, tab_couns, tab_seo,
- tab_fc, tab_up) = st.tabs([
+ tab_fc, tab_up, tab_follower) = st.tabs([
     "Executive", "Meta Ads", "Funnels",
     "Counsellors", "SEO & Traffic", "Forecast & Goals", "Upload Reports",
+    "Follower Performance",
 ])
 
 # =====================================================================
@@ -6484,3 +6485,74 @@ with tab_funnels1:
         st.caption("Avg **days in current stage** = today − last stage move (`updated_at`), for opportunities "
                    "**currently** in each stage. (Full stage history isn't stored, so this is current-stage "
                    "dwell time, not historical time-in-stage.)")
+
+
+# =====================================================================
+# FOLLOWER PERFORMANCE TAB — presales agents (GHL opportunity "followers")
+# =====================================================================
+with tab_follower:
+    st.markdown(
+        "<div class='panel-title'>Follower Performance"
+        "<span class='hint'>presales agents · opportunities they addressed in the selected duration</span>"
+        "</div>", unsafe_allow_html=True)
+
+    fp = run_df("vw_follower_performance",
+                {"since": since.isoformat(), "until": until.isoformat()})
+    if fp.empty or "follower" not in fp.columns:
+        st.info("No opportunities were addressed by any follower in this window "
+                "(or the follower data hasn't been backfilled yet).")
+    else:
+        fp_disp = pd.DataFrame({
+            "Follower":            fp["follower"].fillna("—").values,
+            "Total Opps":          fp["total_opps"].astype(int).values,
+            "New Leads":           fp["new_leads"].astype(int).values,
+            "Pre Sales (1)":       fp["presales_1"].astype(int).values,
+            "Pre Sales (2)":       fp["presales_2"].astype(int).values,
+            "Booking Link Shared": fp["booking_link_shared"].astype(int).values,
+            "Post Consultation":   fp["post_consultation"].astype(int).values,
+            "No Show":             fp["no_show"].astype(int).values,
+            "Lost":                fp["lost"].astype(int).values,
+            "Open":                fp["open_opps"].astype(int).values,
+        })
+        st.dataframe(fp_disp, hide_index=True, use_container_width=True,
+                     height=min(560, 70 + 36 * len(fp_disp)))
+        st.caption(
+            "**Addressed** = the opportunity was created or updated in the selected duration "
+            "(a call, note, follow-up, or a stage move). The stage columns count each addressed "
+            "opp by its **current** stage; **Lost / Open** are by current status (so an opp can "
+            "appear in a stage column *and* in Open/Lost). Follower = the GHL **Followers** on "
+            "the opportunity (the presales agents), not the owner.")
+
+        # ---- Drill-down: pick a follower → the contacts they addressed ----
+        st.markdown("---")
+        pick = st.selectbox("Show contacts addressed by",
+                            ["—"] + list(fp["follower"].fillna("—").values),
+                            key="follower_pick")
+        if pick and pick != "—":
+            det = run_df("vw_follower_detail",
+                         {"since": since.isoformat(), "until": until.isoformat()})
+            det = det[det["follower"] == pick].copy() if not det.empty else det
+            if det.empty:
+                st.caption("No contacts for this follower in the window.")
+            else:
+                # Source (refined_source) + notes from the Executive lead-detail
+                # logic, keyed by contact (same as the other tabs).
+                _src = run_df("vw_exec1_lead_detail",
+                              {"since": "2024-01-01", "until": until.isoformat()})
+                _smap = dict(zip(_src["contact_id"], _src["refined_source"])) if not _src.empty else {}
+                _nmap = dict(zip(_src["contact_id"], _src["notes"]))          if not _src.empty else {}
+                out = pd.DataFrame({
+                    "Email":       det["email"].fillna("—").values,
+                    "Name":        det["contact_name"].fillna("—").values,
+                    "Phone":       det["phone"].fillna("—").values,
+                    "Source":      det["contact_id"].map(_smap).fillna("—").replace("", "—").values,
+                    "Pipeline":    det["pipeline"].fillna("—").values,
+                    "Stage":       det["stage"].fillna("—").values,
+                    "Status":      det["status"].fillna("—").values,
+                    "Notes":       det["contact_id"].map(_nmap).fillna(det["opportunity"]).fillna("—").values,
+                    "Last Update": det["last_update"].astype(str).values,
+                })
+                st.dataframe(out.sort_values("Last Update", ascending=False),
+                             hide_index=True, use_container_width=True, height=460)
+                st.caption(f"{len(out):,} opportunities addressed by **{pick}** in the window. "
+                           "Source = same refined-source logic as the Executive tab.")
