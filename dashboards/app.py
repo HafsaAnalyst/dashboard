@@ -6517,11 +6517,13 @@ with tab_follower:
         st.dataframe(fp_disp, hide_index=True, use_container_width=True,
                      height=min(560, 70 + 36 * len(fp_disp)))
         st.caption(
-            "**Addressed** = the opportunity was created or updated in the selected duration "
-            "(a call, note, follow-up, or a stage move). The stage columns count each addressed "
-            "opp by its **current** stage; **Lost / Open** are by current status (so an opp can "
-            "appear in a stage column *and* in Open/Lost). Follower = the GHL **Followers** on "
-            "the opportunity (the presales agents), not the owner.")
+            "**Addressed** = any activity on the lead in the selected duration — a stage/status "
+            "move on the opportunity **or** a call / SMS / DM / email on the contact. Stage & "
+            "Lost/Open reflect the state **as of the range end**: an opp that only moved into its "
+            "current stage *after* the range isn't credited that stage (it was in an earlier "
+            "stage then). Follower = the GHL **Followers** on the opportunity (the presales "
+            "agents), not the owner — shown as the *current* followers, since GHL keeps no "
+            "follower history, so a recently-added follower may appear for older activity.")
 
         # ---- Drill-down: pick a follower → the contacts they addressed ----
         st.markdown("---")

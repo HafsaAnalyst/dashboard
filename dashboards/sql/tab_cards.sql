@@ -2218,7 +2218,17 @@ addressed AS (
     SELECT f.follower_user_id,
            o.opportunity_id,
            LOWER(COALESCE(o.status, ''))      AS status,
-           LOWER(COALESCE(st.stage_name, '')) AS stage
+           LOWER(COALESCE(st.stage_name, '')) AS stage,
+           -- Point-in-time guard: only credit the CURRENT stage/status to a past
+           -- range if the opp was already in it by the range END. If it moved
+           -- into the current stage/status AFTER the range, it was in an earlier
+           -- (unknown — no stage history) state during the range, so don't credit
+           -- the current one. (Followers are still current — GHL has no follower
+           -- history.)
+           (o.last_stage_change_at IS NULL
+            OR CAST(o.last_stage_change_at + INTERVAL 10 HOUR AS DATE) <= $until)  AS stage_asof,
+           (o.last_status_change_at IS NULL
+            OR CAST(o.last_status_change_at + INTERVAL 10 HOUR AS DATE) <= $until) AS status_asof
     FROM fact_opportunity_followers f
     JOIN fact_opportunities o ON o.opportunity_id = f.opportunity_id
     LEFT JOIN dim_stages st ON st.stage_id = o.stage_id
@@ -2229,16 +2239,16 @@ addressed AS (
        OR CAST(ca.last_activity        + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
 )
 SELECT
-    COALESCE(u.full_name, a.follower_user_id)                  AS follower,
-    COUNT(*)                                                   AS total_opps,
-    COUNT(*) FILTER (WHERE a.stage LIKE 'new lead%')           AS new_leads,
-    COUNT(*) FILTER (WHERE a.stage LIKE 'pre sales (1)%')      AS presales_1,
-    COUNT(*) FILTER (WHERE a.stage LIKE 'pre sales (2)%')      AS presales_2,
-    COUNT(*) FILTER (WHERE a.stage LIKE 'booking link%')       AS booking_link_shared,
-    COUNT(*) FILTER (WHERE a.stage LIKE 'post consultation%')  AS post_consultation,
-    COUNT(*) FILTER (WHERE a.stage LIKE 'no show%')            AS no_show,
-    COUNT(*) FILTER (WHERE a.status = 'lost')                  AS lost,
-    COUNT(*) FILTER (WHERE a.status = 'open')                  AS open_opps
+    COALESCE(u.full_name, a.follower_user_id)                                 AS follower,
+    COUNT(*)                                                                  AS total_opps,
+    COUNT(*) FILTER (WHERE a.stage_asof AND a.stage LIKE 'new lead%')          AS new_leads,
+    COUNT(*) FILTER (WHERE a.stage_asof AND a.stage LIKE 'pre sales (1)%')     AS presales_1,
+    COUNT(*) FILTER (WHERE a.stage_asof AND a.stage LIKE 'pre sales (2)%')     AS presales_2,
+    COUNT(*) FILTER (WHERE a.stage_asof AND a.stage LIKE 'booking link%')      AS booking_link_shared,
+    COUNT(*) FILTER (WHERE a.stage_asof AND a.stage LIKE 'post consultation%') AS post_consultation,
+    COUNT(*) FILTER (WHERE a.stage_asof AND a.stage LIKE 'no show%')           AS no_show,
+    COUNT(*) FILTER (WHERE a.status_asof AND a.status = 'lost')                AS lost,
+    COUNT(*) FILTER (WHERE a.status_asof AND a.status = 'open')                AS open_opps
 FROM addressed a
 LEFT JOIN dim_users u ON u.user_id = a.follower_user_id
 GROUP BY 1
