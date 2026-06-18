@@ -2238,6 +2238,48 @@ FROM cohort
 WHERE COALESCE($city, '') IS NOT NULL;  -- $city unused (site-wide); reference for binds
 
 
+-- TABLE 1b: the same funnel, split BY FOLLOWER (GHL Followers on the opp). For
+-- each follower, of THEIR opps created in [since, until], how many reached each
+-- stage (cumulative). An opp with multiple followers counts under each. Binds:
+-- $since, $until.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE VIEW vw_funnel_by_follower AS
+WITH cohort AS (
+    SELECT o.opportunity_id, f.follower_user_id,
+           LOWER(COALESCE(o.status, ''))      AS status,
+           LOWER(COALESCE(st.stage_name, '')) AS stage,
+           CASE
+               WHEN LOWER(COALESCE(st.stage_name,'')) LIKE 'new lead%'          THEN 1
+               WHEN LOWER(COALESCE(st.stage_name,'')) LIKE 'no show%'           THEN 1
+               WHEN LOWER(COALESCE(st.stage_name,'')) LIKE 'pre sales (1)%'     THEN 2
+               WHEN LOWER(COALESCE(st.stage_name,'')) LIKE 'pre sales (2)%'     THEN 3
+               WHEN LOWER(COALESCE(st.stage_name,'')) LIKE 'booking link%'      THEN 4
+               WHEN LOWER(COALESCE(st.stage_name,'')) LIKE 'post consultation%' THEN 5
+               ELSE 6
+           END AS rnk
+    FROM fact_opportunities o
+    JOIN fact_opportunity_followers f ON f.opportunity_id = o.opportunity_id
+    LEFT JOIN dim_stages st ON st.stage_id = o.stage_id
+    WHERE CAST(o.created_at + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
+)
+SELECT
+    COALESCE(u.full_name, c.follower_user_id)      AS follower,
+    COUNT(*)                                       AS total_opps,
+    COUNT(*)                                       AS new_leads,
+    COUNT(*) FILTER (WHERE rnk >= 2)               AS presales_1,
+    COUNT(*) FILTER (WHERE rnk >= 3)               AS presales_2,
+    COUNT(*) FILTER (WHERE rnk >= 4)               AS booking_link_shared,
+    COUNT(*) FILTER (WHERE rnk >= 5)               AS post_consultation,
+    COUNT(*) FILTER (WHERE stage LIKE 'no show%')  AS no_show,
+    COUNT(*) FILTER (WHERE status = 'lost')        AS lost,
+    COUNT(*) FILTER (WHERE status = 'open')        AS open_opps
+FROM cohort c
+LEFT JOIN dim_users u ON u.user_id = c.follower_user_id
+GROUP BY 1
+HAVING COUNT(*) > 0
+ORDER BY total_opps DESC;
+
+
 -- TABLE 2: Follower activity. Per staff member, the opportunities they personally
 -- performed an activity on within [since, until] — attributed by the message
 -- ACTOR (fact_messages.user_id), excluding system/automation logs. Stage/status

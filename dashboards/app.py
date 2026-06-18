@@ -6496,32 +6496,44 @@ with tab_follower:
         "<span class='hint'>lead funnel + per-agent activity</span></div>",
         unsafe_allow_html=True)
 
-    # ===== Table 1: Lead funnel (cohort of leads CREATED in the period) =====
-    st.markdown("#### 📉 Lead funnel — leads created in the selected duration")
-    fc = run_df("vw_funnel_cohort",
-                {"since": since.isoformat(), "until": until.isoformat(), "city": city})
-    if fc.empty or int(fc["total_opps"].iloc[0]) == 0:
+    # ===== Table 1: Lead funnel by follower (cohort of leads CREATED in period) =====
+    st.markdown("#### 📉 Lead funnel by follower — leads created in the selected duration")
+    fbf = run_df("vw_funnel_by_follower",
+                 {"since": since.isoformat(), "until": until.isoformat()})
+    overall = run_df("vw_funnel_cohort",
+                     {"since": since.isoformat(), "until": until.isoformat(), "city": city})
+    _ov_total = int(overall["total_opps"].iloc[0]) if not overall.empty else 0
+    if fbf.empty and _ov_total == 0:
         st.info("No opportunities were created in this duration.")
     else:
-        r0 = fc.iloc[0]
-        _tot = int(r0["total_opps"]) or 1
-        def _pcf(n): return f"{int(n):,} · {int(n) / _tot * 100:.0f}%"
-        funnel = pd.DataFrame([{
-            "Total Leads":         f"{int(r0['total_opps']):,}",
-            "New Leads":           f"{int(r0['new_leads']):,}",
-            "Pre Sales (1)":       _pcf(r0["presales_1"]),
-            "Pre Sales (2)":       _pcf(r0["presales_2"]),
-            "Booking Link Shared": _pcf(r0["booking_link_shared"]),
-            "Post Consultation":   _pcf(r0["post_consultation"]),
-            "No Show":             _pcf(r0["no_show"]),
-            "Lost":                _pcf(r0["lost"]),
-            "Open":                _pcf(r0["open_opps"]),
-        }])
-        st.dataframe(funnel, hide_index=True, use_container_width=True)
+        def _funnel_row(name, r):
+            tot = int(r["total_opps"]) or 1
+            def _pcf(n): return f"{int(n):,} · {int(n) / tot * 100:.0f}%"
+            return {
+                "Follower":            name,
+                "Total Leads":         f"{int(r['total_opps']):,}",
+                "New Leads":           f"{int(r['new_leads']):,}",
+                "Pre Sales (1)":       _pcf(r["presales_1"]),
+                "Pre Sales (2)":       _pcf(r["presales_2"]),
+                "Booking Link Shared": _pcf(r["booking_link_shared"]),
+                "Post Consultation":   _pcf(r["post_consultation"]),
+                "No Show":             _pcf(r["no_show"]),
+                "Lost":                _pcf(r["lost"]),
+                "Open":                _pcf(r["open_opps"]),
+            }
+        f_rows = []
+        if _ov_total > 0:
+            f_rows.append(_funnel_row("ALL (distinct leads)", overall.iloc[0]))
+        for _, r in fbf.iterrows():
+            f_rows.append(_funnel_row(r["follower"], r))
+        st.dataframe(pd.DataFrame(f_rows), hide_index=True, use_container_width=True,
+                     height=min(560, 70 + 36 * len(f_rows)))
         st.caption(
-            f"Cohort = the **{int(r0['total_opps']):,} opportunities created** in the selected "
-            "duration. Each stage = how many **reached that stage or beyond** (cumulative, by "
-            "stage order) with the % of the cohort. No Show / Lost / Open are current snapshots.")
+            "Each row = a **follower** (GHL Followers on the opp); columns show how many of "
+            "**their** leads created in the duration **reached that stage or beyond** (cumulative) "
+            "with the % of their cohort. **ALL (distinct leads)** is the true overall cohort — an "
+            "opp with multiple followers counts under each follower, so the follower rows sum to "
+            "more than ALL. No Show / Lost / Open are current snapshots.")
 
     # ===== Table 2: Activity by agent (who personally worked each lead) =====
     st.markdown("---")
