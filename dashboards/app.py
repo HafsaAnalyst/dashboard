@@ -6522,19 +6522,21 @@ with tab_follower:
         total_opps      = _sum("total_worked")
         follow_up_total = (_sum("follow_up_1") + _sum("follow_up_2")
                            + _sum("presales_1") + _sum("presales_2"))
-        booking_pending = (_sum("booking_link_shared") + _sum("appointment_booked")
-                           + _sum("no_show"))
+        booking_pending = _sum("booking_link_shared")
         appt_booked     = _sum("appointment_booked")
+        no_show_total   = _sum("no_show")
 
         CARD_VAL = {"total": total_opps, "followup": follow_up_total,
-                    "booking": booking_pending, "appt": appt_booked}
+                    "booking": booking_pending, "appt": appt_booked, "noshow": no_show_total}
         CARD_LBL = {"total": "TOTAL OPPORTUNITIES", "followup": "FOLLOW UP",
-                    "booking": "BOOKING PENDING", "appt": "APPOINTMENT BOOKED"}
+                    "booking": "BOOKING PENDING", "appt": "APPOINTMENT BOOKED",
+                    "noshow": "NO SHOW"}
         CARD_HELP = {
             "total":    "Distinct leads each employee performed an outbound activity on (= total worked).",
             "followup": "Activity while the lead was in Follow up 1 / Follow up 2 / Pre Sales (1) / Pre Sales (2).",
-            "booking":  "Activity while the lead was in Booking Link Shared, Appointment Booked, or No Show.",
+            "booking":  "Activity while the lead was in Booking Link Shared.",
             "appt":     "Activity while the lead was in the L2C-Education Appointment Booked stage.",
+            "noshow":   "Activity while the lead was in No Show — click for the email list.",
         }
         active = st.session_state.get("fp_card", "total")
         if active not in CARD_VAL:
@@ -6548,11 +6550,12 @@ with tab_follower:
                           help=CARD_HELP[key]):
                 st.session_state["fp_card"] = key
                 st.rerun()
-        _cc = st.columns(4)
+        _cc = st.columns(5)
         _fp_card(_cc[0], "total")
         _fp_card(_cc[1], "followup")
         _fp_card(_cc[2], "booking")
         _fp_card(_cc[3], "appt")
+        _fp_card(_cc[4], "noshow")
         st.caption("Click a scorecard to break it down by employee below. Counts are leads bucketed "
                    "by the stage they were in **on the day** the employee acted on them (outbound only).")
 
@@ -6560,9 +6563,11 @@ with tab_follower:
         _gb, _gp = st.columns([3, 2])
         with _gb:
             st.markdown("**Scorecard totals**")
-            _sort = ["Total Opportunities", "Follow Up", "Booking Pending", "Appointment Booked"]
+            _sort = ["Total Opportunities", "Follow Up", "Booking Pending",
+                     "Appointment Booked", "No Show"]
             _m = pd.DataFrame({"Metric": _sort,
-                               "Count":  [total_opps, follow_up_total, booking_pending, appt_booked]})
+                               "Count":  [total_opps, follow_up_total, booking_pending,
+                                          appt_booked, no_show_total]})
             _bar = _alt.Chart(_m).mark_bar(cornerRadius=6, height=38).encode(
                 x=_alt.X("Count:Q", title=None,
                          axis=_alt.Axis(grid=False, labels=False, ticks=False)),
@@ -6570,7 +6575,8 @@ with tab_follower:
                          axis=_alt.Axis(domain=False, ticks=False, labelFontSize=13)),
                 color=_alt.Color("Metric:N", legend=None,
                                  scale=_alt.Scale(domain=_sort,
-                                                  range=["#4DA6FF", "#7A52CC", "#f6995c", "#2EAD8F"])),
+                                                  range=["#4DA6FF", "#7A52CC", "#f6995c",
+                                                         "#2EAD8F", "#FF4D66"])),
                 tooltip=["Metric:N", "Count:Q"])
             _lab = _alt.Chart(_m).mark_text(align="left", dx=6, fontSize=13,
                                             fontWeight="bold", color="#1A1A1A").encode(
@@ -6591,22 +6597,49 @@ with tab_follower:
                 st.altair_chart(_pie.properties(height=170), use_container_width=True)
 
         # ---- Dynamic breakdown for the active scorecard ----
-        BREAKDOWN = {
-            "total":    (["total_worked"], {"total_worked": "Total Worked"}),
-            "followup": (["follow_up_1", "follow_up_2", "presales_1", "presales_2"],
-                         {"follow_up_1": "Follow up 1", "follow_up_2": "Follow up 2",
-                          "presales_1": "Pre Sales (1)", "presales_2": "Pre Sales (2)"}),
-            "booking":  (["booking_link_shared", "appointment_booked", "no_show"],
-                         {"booking_link_shared": "Booking Link Shared",
-                          "appointment_booked": "Appointment Booked", "no_show": "No Show"}),
-            "appt":     (["appointment_booked"], {"appointment_booked": "Appointment Booked"}),
-        }
-        _cols, _ren = BREAKDOWN[active]
-        st.markdown(f"##### {CARD_LBL[active].title()} — by Follower / Owner")
-        _bd = ea[["employee"] + _cols].copy().sort_values(_cols[0], ascending=False)
-        _bd = _bd.rename(columns={"employee": "Follower / Owner", **_ren})
-        st.dataframe(_bd, hide_index=True, use_container_width=True,
-                     height=min(320, 70 + 36 * len(_bd)))
+        if active == "noshow":
+            # No Show drills to the EMAIL-level list of the leads worked while in No Show.
+            st.markdown("##### No Show — leads (by email) worked on while in No Show")
+            det = run_df("vw_employee_activity_detail",
+                         {"since": since.isoformat(), "until": until.isoformat(),
+                          "pipeline": _pipe_lbl})
+            if not det.empty:
+                det = det[det["employee"].isin(ALLOWED)
+                          & (det["stage_on_activity_date"] == "No Show")].copy()
+            if det.empty:
+                st.caption("No No-Show activity in this duration for the selected pipeline.")
+            else:
+                _src = run_df("vw_exec1_lead_detail",
+                              {"since": "2024-01-01", "until": until.isoformat()})
+                _smap = dict(zip(_src["contact_id"], _src["refined_source"])) if not _src.empty else {}
+                det = det.sort_values("act_date", ascending=False)
+                _ns = pd.DataFrame({
+                    "Email":         det["email"].fillna("—").values,
+                    "Name":          det["contact_name"].fillna("—").values,
+                    "Phone":         det["phone"].fillna("—").values,
+                    "Worked By":     det["employee"].fillna("—").values,
+                    "Source":        det["contact_id"].map(_smap).fillna("—").replace("", "—").values,
+                    "Activity Date": pd.to_datetime(det["act_date"]).dt.strftime("%d %b %Y").values,
+                }).drop_duplicates()
+                st.dataframe(_ns, hide_index=True, use_container_width=True,
+                             height=min(460, 70 + 36 * len(_ns)))
+                st.caption(f"{len(_ns):,} No-Show lead-days across the selected employees.")
+        else:
+            BREAKDOWN = {
+                "total":    (["total_worked"], {"total_worked": "Total Worked"}),
+                "followup": (["follow_up_1", "follow_up_2", "presales_1", "presales_2"],
+                             {"follow_up_1": "Follow up 1", "follow_up_2": "Follow up 2",
+                              "presales_1": "Pre Sales (1)", "presales_2": "Pre Sales (2)"}),
+                "booking":  (["booking_link_shared"],
+                             {"booking_link_shared": "Booking Link Shared"}),
+                "appt":     (["appointment_booked"], {"appointment_booked": "Appointment Booked"}),
+            }
+            _cols, _ren = BREAKDOWN[active]
+            st.markdown(f"##### {CARD_LBL[active].title()} — by Follower / Owner")
+            _bd = ea[["employee"] + _cols].copy().sort_values(_cols[0], ascending=False)
+            _bd = _bd.rename(columns={"employee": "Follower / Owner", **_ren})
+            st.dataframe(_bd, hide_index=True, use_container_width=True,
+                         height=min(320, 70 + 36 * len(_bd)))
 
         # ===== Full activity matrix — every stage column =====
         st.markdown("---")
