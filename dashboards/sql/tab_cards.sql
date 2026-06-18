@@ -2450,6 +2450,7 @@ labelled AS (          -- map raw stage name → funnel column; distinct lead×s
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'pre sales (1)%'    THEN 'Pre Sales (1)'
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'pre sales (2)%'    THEN 'Pre Sales (2)'
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'booking link%'     THEN 'Booking Link Shared'
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'appointment booked%' THEN 'Appointment Booked'
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'post consultation%' THEN 'Post Consultation'
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'no show%'          THEN 'No Show'
             ELSE 'Later Stage'
@@ -2465,6 +2466,7 @@ SELECT
     COUNT(*) FILTER (WHERE l.stage_label = 'Pre Sales (1)')            AS presales_1,
     COUNT(*) FILTER (WHERE l.stage_label = 'Pre Sales (2)')            AS presales_2,
     COUNT(*) FILTER (WHERE l.stage_label = 'Booking Link Shared')      AS booking_link_shared,
+    COUNT(*) FILTER (WHERE l.stage_label = 'Appointment Booked')       AS appointment_booked,
     COUNT(*) FILTER (WHERE l.stage_label = 'Post Consultation')        AS post_consultation,
     COUNT(*) FILTER (WHERE l.stage_label = 'No Show')                  AS no_show,
     COUNT(*) FILTER (WHERE l.stage_label = 'Later Stage')              AS later_stage
@@ -2550,6 +2552,7 @@ labelled AS (
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'pre sales (1)%'     THEN 'Pre Sales (1)'
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'pre sales (2)%'     THEN 'Pre Sales (2)'
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'booking link%'      THEN 'Booking Link Shared'
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'appointment booked%' THEN 'Appointment Booked'
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'post consultation%' THEN 'Post Consultation'
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'no show%'           THEN 'No Show'
             ELSE 'Later Stage'

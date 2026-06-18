@@ -6493,61 +6493,119 @@ with tab_funnels1:
 with tab_follower:
     st.markdown(
         "<div class='panel-title'>Follower Performance"
-        "<span class='hint'>lead funnel + per-agent activity</span></div>",
+        "<span class='hint'>employee activity by point-in-time stage</span></div>",
         unsafe_allow_html=True)
 
-    # ===== Table 1: Lead funnel by follower (cohort of leads CREATED in period) =====
-    st.markdown("#### 📉 Lead funnel by follower — leads created in the selected duration")
-    fbf = run_df("vw_funnel_by_follower",
-                 {"since": since.isoformat(), "until": until.isoformat()})
-    overall = run_df("vw_funnel_cohort",
-                     {"since": since.isoformat(), "until": until.isoformat(), "city": city})
-    _ov_total = int(overall["total_opps"].iloc[0]) if not overall.empty else 0
-    if fbf.empty and _ov_total == 0:
-        st.info("No opportunities were created in this duration.")
-    else:
-        def _funnel_row(name, r):
-            tot = int(r["total_opps"]) or 1
-            def _pcf(n): return f"{int(n):,} · {int(n) / tot * 100:.0f}%"
-            return {
-                "Follower":            name,
-                "Total Leads":         f"{int(r['total_opps']):,}",
-                "New Leads":           f"{int(r['new_leads']):,}",
-                "Pre Sales (1)":       _pcf(r["presales_1"]),
-                "Pre Sales (2)":       _pcf(r["presales_2"]),
-                "Booking Link Shared": _pcf(r["booking_link_shared"]),
-                "Post Consultation":   _pcf(r["post_consultation"]),
-                "No Show":             _pcf(r["no_show"]),
-                "Lost":                _pcf(r["lost"]),
-                "Open":                _pcf(r["open_opps"]),
-            }
-        f_rows = []
-        if _ov_total > 0:
-            f_rows.append(_funnel_row("ALL (distinct leads)", overall.iloc[0]))
-        for _, r in fbf.iterrows():
-            f_rows.append(_funnel_row(r["follower"], r))
-        st.dataframe(pd.DataFrame(f_rows), hide_index=True, use_container_width=True,
-                     height=min(560, 70 + 36 * len(f_rows)))
-        st.caption(
-            "Each row = a **follower** (GHL Followers on the opp); columns show how many of "
-            "**their** leads created in the duration **reached that stage or beyond** (cumulative) "
-            "with the % of their cohort. **ALL (distinct leads)** is the true overall cohort — an "
-            "opp with multiple followers counts under each follower, so the follower rows sum to "
-            "more than ALL. No Show / Lost / Open are current snapshots.")
+    import altair as _alt
 
-    # ===== Table 2: Activity by employee, bucketed by point-in-time stage =====
-    st.markdown("---")
-    st.markdown("#### 🧑‍💼 Activity by employee — leads worked on, by the stage they were in **that day**")
+    # This tab shows ONLY these employees, everywhere.
+    ALLOWED = ["Syeda Ume Abiha", "Tehreem Ghouri", "Ali Ijaz"]
+
+    # Tab-wide starting-pipeline filter (applies to scorecards + activity table).
     _pipe_lbl = st.radio(
         "Starting pipeline", ["All", "L2C - Education", "L2C - Skill Migration"],
         horizontal=True, key="emp_act_pipeline")
+
     ea = run_df("vw_employee_activity",
                 {"since": since.isoformat(), "until": until.isoformat(),
                  "pipeline": _pipe_lbl})
-    if ea.empty or "employee" not in ea.columns:
-        st.info("No employee activity recorded in this duration for the selected pipeline "
+    if not ea.empty and "employee" in ea.columns:
+        ea = ea[ea["employee"].isin(ALLOWED)].copy().reset_index(drop=True)
+
+    if ea.empty:
+        st.info("No activity recorded in this duration for the selected pipeline "
                 "(or stage history hasn't been backfilled yet).")
     else:
+        # ===== Scorecards (replace the old funnel-by-follower table) =====
+        def _sum(col):
+            return int(ea[col].sum()) if col in ea.columns else 0
+        total_opps      = _sum("total_worked")
+        follow_up_total = (_sum("follow_up_1") + _sum("follow_up_2")
+                           + _sum("presales_1") + _sum("presales_2"))
+        booking_pending = (_sum("booking_link_shared") + _sum("appointment_booked")
+                           + _sum("no_show"))
+
+        CARD_VAL = {"total": total_opps, "followup": follow_up_total, "booking": booking_pending}
+        CARD_LBL = {"total": "TOTAL OPPORTUNITIES", "followup": "FOLLOW UP",
+                    "booking": "BOOKING PENDING"}
+        CARD_HELP = {
+            "total":    "Distinct leads each employee performed an outbound activity on (= total worked).",
+            "followup": "Activity while the lead was in Follow up 1 / Follow up 2 / Pre Sales (1) / Pre Sales (2).",
+            "booking":  "Activity while the lead was in Booking Link Shared, Appointment Booked, or No Show.",
+        }
+        active = st.session_state.get("fp_card", "total")
+        if active not in CARD_VAL:
+            active = "total"
+
+        def _fp_card(col, key):
+            is_active = (key == active)
+            if col.button(f"{CARD_LBL[key]}\n\n{CARD_VAL[key]:,}",
+                          key=f"fp_card_{key}", use_container_width=True,
+                          type=("primary" if is_active else "secondary"),
+                          help=CARD_HELP[key]):
+                st.session_state["fp_card"] = key
+                st.rerun()
+        _cc = st.columns(3)
+        _fp_card(_cc[0], "total")
+        _fp_card(_cc[1], "followup")
+        _fp_card(_cc[2], "booking")
+        st.caption("Click a scorecard to break it down by employee below. Counts are leads bucketed "
+                   "by the stage they were in **on the day** the employee acted on them (outbound only).")
+
+        # ---- Charts: scorecard totals (bar) + workload share by employee (pie) ----
+        _gb, _gp = st.columns([3, 2])
+        with _gb:
+            st.markdown("**Scorecard totals**")
+            _sort = ["Total Opportunities", "Follow Up", "Booking Pending"]
+            _m = pd.DataFrame({"Metric": _sort,
+                               "Count":  [total_opps, follow_up_total, booking_pending]})
+            _bar = _alt.Chart(_m).mark_bar(cornerRadius=6, height=38).encode(
+                x=_alt.X("Count:Q", title=None,
+                         axis=_alt.Axis(grid=False, labels=False, ticks=False)),
+                y=_alt.Y("Metric:N", sort=_sort, title=None,
+                         axis=_alt.Axis(domain=False, ticks=False, labelFontSize=13)),
+                color=_alt.Color("Metric:N", legend=None,
+                                 scale=_alt.Scale(domain=_sort,
+                                                  range=["#4DA6FF", "#7A52CC", "#f6995c"])),
+                tooltip=["Metric:N", "Count:Q"])
+            _lab = _alt.Chart(_m).mark_text(align="left", dx=6, fontSize=13,
+                                            fontWeight="bold", color="#1A1A1A").encode(
+                x="Count:Q", y=_alt.Y("Metric:N", sort=_sort), text="Count:Q")
+            st.altair_chart((_bar + _lab).properties(height=170).configure_view(strokeWidth=0),
+                            use_container_width=True)
+        with _gp:
+            st.markdown("**Workload by employee**")
+            _w = ea[["employee", "total_worked"]].copy()
+            _w = _w[_w["total_worked"] > 0]
+            if _w.empty:
+                st.caption("No workload to chart.")
+            else:
+                _pie = _alt.Chart(_w).mark_arc(innerRadius=45).encode(
+                    theta=_alt.Theta("total_worked:Q"),
+                    color=_alt.Color("employee:N", title="Employee"),
+                    tooltip=["employee:N", "total_worked:Q"])
+                st.altair_chart(_pie.properties(height=170), use_container_width=True)
+
+        # ---- Dynamic breakdown for the active scorecard ----
+        BREAKDOWN = {
+            "total":    (["total_worked"], {"total_worked": "Total Worked"}),
+            "followup": (["follow_up_1", "follow_up_2", "presales_1", "presales_2"],
+                         {"follow_up_1": "Follow up 1", "follow_up_2": "Follow up 2",
+                          "presales_1": "Pre Sales (1)", "presales_2": "Pre Sales (2)"}),
+            "booking":  (["booking_link_shared", "appointment_booked", "no_show"],
+                         {"booking_link_shared": "Booking Link Shared",
+                          "appointment_booked": "Appointment Booked", "no_show": "No Show"}),
+        }
+        _cols, _ren = BREAKDOWN[active]
+        st.markdown(f"##### {CARD_LBL[active].title()} — by Follower / Owner")
+        _bd = ea[["employee"] + _cols].copy().sort_values(_cols[0], ascending=False)
+        _bd = _bd.rename(columns={"employee": "Follower / Owner", **_ren})
+        st.dataframe(_bd, hide_index=True, use_container_width=True,
+                     height=min(320, 70 + 36 * len(_bd)))
+
+        # ===== Full activity matrix — every stage column =====
+        st.markdown("---")
+        st.markdown("#### 🧑‍💼 Activity by employee — leads worked on, by the stage they were in **that day**")
         ea_disp = pd.DataFrame({
             "Follower / Owner":    ea["employee"].fillna("—").values,
             "Total Worked":        ea["total_worked"].astype(int).values,
@@ -6557,6 +6615,7 @@ with tab_follower:
             "Pre Sales (1)":       ea["presales_1"].astype(int).values,
             "Pre Sales (2)":       ea["presales_2"].astype(int).values,
             "Booking Link Shared": ea["booking_link_shared"].astype(int).values,
+            "Appointment Booked":  ea["appointment_booked"].astype(int).values,
             "Post Consultation":   ea["post_consultation"].astype(int).values,
             "No Show":             ea["no_show"].astype(int).values,
             "Later Stage":         ea["later_stage"].astype(int).values,
@@ -6569,9 +6628,9 @@ with tab_follower:
             "(inbound “client reached out” is excluded). Each lead is counted under the stage it was "
             "**in on the day the activity happened** (reconstructed from stage history), so a lead "
             "worked on two days in two stages appears in both columns and **Total Worked** = sum of "
-            "the stage columns. Scope = leads whose journey **started** in the selected pipeline; "
-            "**Later Stage** = activity after the lead moved into a service pipeline (L2C-VISA, "
-            "CLT-Onshore, etc.).")
+            "the stage columns. **Appointment Booked** = the L2C-Education appointment-booked stage; "
+            "**Later Stage** = activity once the lead moved into any other stage / pipeline "
+            "(L2C-VISA, CLT-Onshore, MARA, Won, etc.).")
 
         # ---- Drill-down: pick an employee → the leads + stage-on-activity-date ----
         st.markdown("---")
