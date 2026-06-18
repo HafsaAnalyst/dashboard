@@ -6524,14 +6524,17 @@ with tab_follower:
                            + _sum("presales_1") + _sum("presales_2"))
         booking_pending = (_sum("booking_link_shared") + _sum("appointment_booked")
                            + _sum("no_show"))
+        appt_booked     = _sum("appointment_booked")
 
-        CARD_VAL = {"total": total_opps, "followup": follow_up_total, "booking": booking_pending}
+        CARD_VAL = {"total": total_opps, "followup": follow_up_total,
+                    "booking": booking_pending, "appt": appt_booked}
         CARD_LBL = {"total": "TOTAL OPPORTUNITIES", "followup": "FOLLOW UP",
-                    "booking": "BOOKING PENDING"}
+                    "booking": "BOOKING PENDING", "appt": "APPOINTMENT BOOKED"}
         CARD_HELP = {
             "total":    "Distinct leads each employee performed an outbound activity on (= total worked).",
             "followup": "Activity while the lead was in Follow up 1 / Follow up 2 / Pre Sales (1) / Pre Sales (2).",
             "booking":  "Activity while the lead was in Booking Link Shared, Appointment Booked, or No Show.",
+            "appt":     "Activity while the lead was in the L2C-Education Appointment Booked stage.",
         }
         active = st.session_state.get("fp_card", "total")
         if active not in CARD_VAL:
@@ -6545,10 +6548,11 @@ with tab_follower:
                           help=CARD_HELP[key]):
                 st.session_state["fp_card"] = key
                 st.rerun()
-        _cc = st.columns(3)
+        _cc = st.columns(4)
         _fp_card(_cc[0], "total")
         _fp_card(_cc[1], "followup")
         _fp_card(_cc[2], "booking")
+        _fp_card(_cc[3], "appt")
         st.caption("Click a scorecard to break it down by employee below. Counts are leads bucketed "
                    "by the stage they were in **on the day** the employee acted on them (outbound only).")
 
@@ -6556,9 +6560,9 @@ with tab_follower:
         _gb, _gp = st.columns([3, 2])
         with _gb:
             st.markdown("**Scorecard totals**")
-            _sort = ["Total Opportunities", "Follow Up", "Booking Pending"]
+            _sort = ["Total Opportunities", "Follow Up", "Booking Pending", "Appointment Booked"]
             _m = pd.DataFrame({"Metric": _sort,
-                               "Count":  [total_opps, follow_up_total, booking_pending]})
+                               "Count":  [total_opps, follow_up_total, booking_pending, appt_booked]})
             _bar = _alt.Chart(_m).mark_bar(cornerRadius=6, height=38).encode(
                 x=_alt.X("Count:Q", title=None,
                          axis=_alt.Axis(grid=False, labels=False, ticks=False)),
@@ -6566,7 +6570,7 @@ with tab_follower:
                          axis=_alt.Axis(domain=False, ticks=False, labelFontSize=13)),
                 color=_alt.Color("Metric:N", legend=None,
                                  scale=_alt.Scale(domain=_sort,
-                                                  range=["#4DA6FF", "#7A52CC", "#f6995c"])),
+                                                  range=["#4DA6FF", "#7A52CC", "#f6995c", "#2EAD8F"])),
                 tooltip=["Metric:N", "Count:Q"])
             _lab = _alt.Chart(_m).mark_text(align="left", dx=6, fontSize=13,
                                             fontWeight="bold", color="#1A1A1A").encode(
@@ -6595,6 +6599,7 @@ with tab_follower:
             "booking":  (["booking_link_shared", "appointment_booked", "no_show"],
                          {"booking_link_shared": "Booking Link Shared",
                           "appointment_booked": "Appointment Booked", "no_show": "No Show"}),
+            "appt":     (["appointment_booked"], {"appointment_booked": "Appointment Booked"}),
         }
         _cols, _ren = BREAKDOWN[active]
         st.markdown(f"##### {CARD_LBL[active].title()} — by Follower / Owner")
