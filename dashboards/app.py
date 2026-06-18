@@ -6535,62 +6535,73 @@ with tab_follower:
             "opp with multiple followers counts under each follower, so the follower rows sum to "
             "more than ALL. No Show / Lost / Open are current snapshots.")
 
-    # ===== Table 2: Activity by agent (who personally worked each lead) =====
+    # ===== Table 2: Activity by employee, bucketed by point-in-time stage =====
     st.markdown("---")
-    st.markdown("#### 🧑‍💼 Activity by agent — leads each person worked on in the duration")
-    fa = run_df("vw_follower_activity",
-                {"since": since.isoformat(), "until": until.isoformat()})
-    if fa.empty or "follower" not in fa.columns:
-        st.info("No agent activity recorded in this duration "
-                "(or message-level data hasn't been backfilled yet).")
+    st.markdown("#### 🧑‍💼 Activity by employee — leads worked on, by the stage they were in **that day**")
+    _pipe_lbl = st.radio(
+        "Starting pipeline", ["All", "L2C - Education", "L2C - Skill Migration"],
+        horizontal=True, key="emp_act_pipeline")
+    ea = run_df("vw_employee_activity",
+                {"since": since.isoformat(), "until": until.isoformat(),
+                 "pipeline": _pipe_lbl})
+    if ea.empty or "employee" not in ea.columns:
+        st.info("No employee activity recorded in this duration for the selected pipeline "
+                "(or stage history hasn't been backfilled yet).")
     else:
-        fa_disp = pd.DataFrame({
-            "Agent":               fa["follower"].fillna("—").values,
-            "Total Opps":          fa["total_opps"].astype(int).values,
-            "New Leads":           fa["new_leads"].astype(int).values,
-            "Pre Sales (1)":       fa["presales_1"].astype(int).values,
-            "Pre Sales (2)":       fa["presales_2"].astype(int).values,
-            "Booking Link Shared": fa["booking_link_shared"].astype(int).values,
-            "Post Consultation":   fa["post_consultation"].astype(int).values,
-            "No Show":             fa["no_show"].astype(int).values,
-            "Lost":                fa["lost"].astype(int).values,
-            "Open":                fa["open_opps"].astype(int).values,
+        ea_disp = pd.DataFrame({
+            "Follower / Owner":    ea["employee"].fillna("—").values,
+            "Total Worked":        ea["total_worked"].astype(int).values,
+            "New Lead":            ea["new_lead"].astype(int).values,
+            "Follow up 1":         ea["follow_up_1"].astype(int).values,
+            "Follow up 2":         ea["follow_up_2"].astype(int).values,
+            "Pre Sales (1)":       ea["presales_1"].astype(int).values,
+            "Pre Sales (2)":       ea["presales_2"].astype(int).values,
+            "Booking Link Shared": ea["booking_link_shared"].astype(int).values,
+            "Post Consultation":   ea["post_consultation"].astype(int).values,
+            "No Show":             ea["no_show"].astype(int).values,
+            "Later Stage":         ea["later_stage"].astype(int).values,
         })
-        st.dataframe(fa_disp, hide_index=True, use_container_width=True,
-                     height=min(560, 70 + 36 * len(fa_disp)))
+        st.dataframe(ea_disp, hide_index=True, use_container_width=True,
+                     height=min(560, 70 + 36 * len(ea_disp)))
         st.caption(
-            "Each row = a staff member and the opportunities they **personally performed an "
-            "activity on** (a call / SMS / email / DM they logged) in the selected duration — "
-            "attributed by **who did the action** (message actor), excluding automated logs. "
-            "Stage & Lost/Open reflect the opp's state **as of the range end** (an opp that moved "
-            "into its current stage *after* the range isn't credited that stage).")
+            "Each row = an employee and the leads they **personally performed an outbound activity "
+            "on** (call / SMS / email / note) in the duration — credited to **who did the action** "
+            "(inbound “client reached out” is excluded). Each lead is counted under the stage it was "
+            "**in on the day the activity happened** (reconstructed from stage history), so a lead "
+            "worked on two days in two stages appears in both columns and **Total Worked** = sum of "
+            "the stage columns. Scope = leads whose journey **started** in the selected pipeline; "
+            "**Later Stage** = activity after the lead moved into a service pipeline (L2C-VISA, "
+            "CLT-Onshore, etc.).")
 
-        # ---- Drill-down: pick an agent → the leads they worked on ----
+        # ---- Drill-down: pick an employee → the leads + stage-on-activity-date ----
         st.markdown("---")
         pick = st.selectbox("Show leads worked on by",
-                            ["—"] + list(fa["follower"].fillna("—").values),
-                            key="follower_pick")
+                            ["—"] + list(ea["employee"].fillna("—").values),
+                            key="emp_act_pick")
         if pick and pick != "—":
-            det = run_df("vw_follower_activity_detail",
-                         {"since": since.isoformat(), "until": until.isoformat()})
-            det = det[det["follower"] == pick].copy() if not det.empty else det
+            det = run_df("vw_employee_activity_detail",
+                         {"since": since.isoformat(), "until": until.isoformat(),
+                          "pipeline": _pipe_lbl})
+            det = det[det["employee"] == pick].copy() if not det.empty else det
             if det.empty:
-                st.caption("No leads for this agent in the duration.")
+                st.caption("No leads for this employee in the duration.")
             else:
                 _src = run_df("vw_exec1_lead_detail",
                               {"since": "2024-01-01", "until": until.isoformat()})
                 _smap = dict(zip(_src["contact_id"], _src["refined_source"])) if not _src.empty else {}
                 _nmap = dict(zip(_src["contact_id"], _src["notes"]))          if not _src.empty else {}
+                det = det.sort_values("act_date", ascending=False)
                 out = pd.DataFrame({
-                    "Email":    det["email"].fillna("—").values,
-                    "Name":     det["contact_name"].fillna("—").values,
-                    "Phone":    det["phone"].fillna("—").values,
-                    "Source":   det["contact_id"].map(_smap).fillna("—").replace("", "—").values,
-                    "Pipeline": det["pipeline"].fillna("—").values,
-                    "Stage":    det["stage"].fillna("—").values,
-                    "Status":   det["status"].fillna("—").values,
-                    "Notes":    det["contact_id"].map(_nmap).fillna(det["opportunity"]).fillna("—").values,
+                    "Email":         det["email"].fillna("—").values,
+                    "Name":          det["contact_name"].fillna("—").values,
+                    "Phone":         det["phone"].fillna("—").values,
+                    "Source":        det["contact_id"].map(_smap).fillna("—").replace("", "—").values,
+                    "Start Pipeline": det["pipeline"].fillna("—").values,
+                    "Activity Date": pd.to_datetime(det["act_date"]).dt.strftime("%d %b %Y").values,
+                    "Stage That Day": det["stage_on_activity_date"].fillna("—").values,
+                    "Notes":         det["contact_id"].map(_nmap).fillna("—").values,
                 }).drop_duplicates()
                 st.dataframe(out, hide_index=True, use_container_width=True, height=460)
-                st.caption(f"{len(out):,} leads **{pick}** performed an activity on in the duration. "
+                st.caption(f"{len(out):,} lead-days **{pick}** performed an outbound activity on. "
+                           "Stage That Day = the stage the lead was in on that activity date. "
                            "Source = same refined-source logic as the Executive tab.")

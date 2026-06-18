@@ -147,6 +147,20 @@ CREATE TABLE IF NOT EXISTS fact_messages (
     date_added        TIMESTAMP
 );
 
+-- Grain: 1 row per opportunity stage/status-change event, reconstructed from GHL
+-- TYPE_ACTIVITY_OPPORTUNITY activity logs (activity.data carries oldStageName /
+-- newStageName / pipeline / status). Lets us answer "what stage was this lead in
+-- on date D" (point-in-time), which the Follower Performance activity table needs.
+CREATE TABLE IF NOT EXISTS fact_opp_stage_events (
+    event_id          VARCHAR PRIMARY KEY,   -- the activity message id
+    opportunity_id    VARCHAR,
+    contact_id        VARCHAR,
+    pipeline          VARCHAR,
+    old_stage         VARCHAR,
+    new_stage         VARCHAR,
+    changed_at        TIMESTAMP
+);
+
 -- Grain: 1 row per GHL calendar event (appointment).
 -- canonical_outcome bucketises GHL's appointmentStatus into 4 stable values:
 --   show | noshow | cancelled | pending

@@ -234,6 +234,13 @@ def extract_ghl(con, since: str, until: str) -> dict:
             msg_df = normalize.normalize_messages(msg_rows)
             upsert_df(con, "fact_messages", msg_df, "message_id")
             summary["fact_messages"] = len(msg_df)
+
+            # Same message payloads carry opportunity stage-change activity logs
+            # (TYPE_ACTIVITY_OPPORTUNITY) — reconstruct the per-opp stage timeline
+            # so we can answer "what stage was this lead in on date D".
+            stage_df = normalize.normalize_stage_events(msg_rows)
+            upsert_df(con, "fact_opp_stage_events", stage_df, "event_id")
+            summary["fact_opp_stage_events"] = len(stage_df)
         except Exception as e:
             logger.exception("GHL messages failed: %s", e)
 

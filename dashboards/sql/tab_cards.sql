@@ -2258,15 +2258,12 @@ WITH cohort AS (
                ELSE 6
            END AS rnk
     FROM fact_opportunities o
-    -- LEFT JOIN so opps with NO follower (mostly new leads not yet picked up)
-    -- fall into an 'Unassigned' bucket rather than vanishing from the funnel.
-    LEFT JOIN fact_opportunity_followers f ON f.opportunity_id = o.opportunity_id
+    JOIN fact_opportunity_followers f ON f.opportunity_id = o.opportunity_id
     LEFT JOIN dim_stages st ON st.stage_id = o.stage_id
     WHERE CAST(o.created_at + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
 )
 SELECT
-    CASE WHEN c.follower_user_id IS NULL THEN 'Unassigned'
-         ELSE COALESCE(u.full_name, c.follower_user_id) END AS follower,
+    COALESCE(u.full_name, c.follower_user_id)      AS follower,
     COUNT(*)                                       AS total_opps,
     COUNT(*)                                       AS new_leads,
     COUNT(*) FILTER (WHERE rnk >= 2)               AS presales_1,
@@ -2352,3 +2349,222 @@ LEFT JOIN dim_stages st ON st.stage_id = o.stage_id
 LEFT JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id
 LEFT JOIN dim_users u ON u.user_id = a.user_id
 LEFT JOIN fact_contacts c ON c.contact_id = a.contact_id;
+
+
+-- =====================================================================
+-- Employee activity by point-in-time stage (Follower Performance, Table 2)
+-- =====================================================================
+-- Per employee, for each lead they did an OUTBOUND activity on in the range,
+-- bucket the lead by the stage it was IN ON THE ACTIVITY DATE (reconstructed from
+-- fact_opp_stage_events), not its current stage. Credit goes to whoever performed
+-- the activity (the message actor). Inbound ("client reached out") is excluded.
+-- A lead worked on two days in two stages counts in both stage columns.
+--
+-- Scope: leads whose journey STARTED in L2C - Education or L2C - Skill Migration
+-- (the funnel pipelines). We follow the lead across pipelines via the CONTACT's
+-- full stage timeline (all its opps), so once it moves to a service pipeline the
+-- activity lands in "Later Stage". Pipeline filter ($pipeline) is on the lead's
+-- starting (origin) pipeline.  Binds: $since, $until, $pipeline.
+--
+-- Shared stage timeline used by both vw_employee_activity and *_detail:
+--   _emp_act_staged(user_id, act_date, contact_id, stage_label)
+-- DuckDB doesn't support CTE reuse across views, so the body is duplicated.
+
+CREATE OR REPLACE VIEW vw_employee_activity AS
+WITH events_obs AS (   -- each stage transition: stage active starting at changed_at
+    SELECT contact_id, changed_at AS obs_ts,
+           CAST(changed_at + INTERVAL 10 HOUR AS DATE) AS obs_date,
+           new_stage AS stage
+    FROM fact_opp_stage_events
+    WHERE contact_id IS NOT NULL AND new_stage IS NOT NULL
+),
+first_evt AS (         -- initial stage = old_stage of each opp's earliest transition
+    SELECT opportunity_id,
+           arg_min(old_stage, changed_at) FILTER (WHERE old_stage IS NOT NULL) AS init_stage
+    FROM fact_opp_stage_events GROUP BY 1
+),
+init_obs AS (
+    SELECT o.contact_id, o.created_at AS obs_ts,
+           CAST(o.created_at + INTERVAL 10 HOUR AS DATE) AS obs_date,
+           f.init_stage AS stage
+    FROM first_evt f
+    JOIN fact_opportunities o ON o.opportunity_id = f.opportunity_id
+    WHERE f.init_stage IS NOT NULL AND o.contact_id IS NOT NULL AND o.created_at IS NOT NULL
+),
+noevt_obs AS (         -- opps with no recorded transitions: fall back to current stage
+    SELECT o.contact_id, o.created_at AS obs_ts,
+           CAST(o.created_at + INTERVAL 10 HOUR AS DATE) AS obs_date,
+           st.stage_name AS stage
+    FROM fact_opportunities o
+    LEFT JOIN dim_stages st ON st.stage_id = o.stage_id
+    WHERE o.contact_id IS NOT NULL AND o.created_at IS NOT NULL
+      AND o.opportunity_id NOT IN (SELECT opportunity_id FROM fact_opp_stage_events
+                                   WHERE opportunity_id IS NOT NULL)
+),
+obs AS (
+    SELECT * FROM events_obs
+    UNION ALL SELECT * FROM init_obs
+    UNION ALL SELECT * FROM noevt_obs
+),
+obs1 AS (              -- one stage per (contact, date): the latest observation that day
+    SELECT contact_id, obs_date, arg_max(stage, obs_ts) AS stage
+    FROM obs WHERE obs_date IS NOT NULL GROUP BY 1, 2
+),
+contact_origin AS (    -- the lead's starting pipeline (earliest funnel opp)
+    SELECT o.contact_id,
+           arg_min(p.pipeline_name, o.created_at) AS origin_pipeline
+    FROM fact_opportunities o
+    JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id
+    WHERE p.pipeline_name IN ('L2C - Education', 'L2C - Skill Migration')
+    GROUP BY 1
+),
+acts AS (              -- outbound staff activity in range (inbound excluded)
+    SELECT DISTINCT m.user_id,
+           CAST(m.date_added + INTERVAL 10 HOUR AS DATE) AS act_date,
+           m.contact_id
+    FROM fact_messages m
+    WHERE m.user_id IS NOT NULL
+      AND m.contact_id IS NOT NULL
+      AND UPPER(COALESCE(m.message_type, '')) NOT LIKE 'TYPE_ACTIVITY%'
+      AND LOWER(COALESCE(m.direction, '')) <> 'inbound'
+      AND CAST(m.date_added + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
+),
+acts_scoped AS (       -- keep only leads that started in a funnel pipeline + filter
+    SELECT a.user_id, a.act_date, a.contact_id, co.origin_pipeline
+    FROM acts a
+    JOIN contact_origin co ON co.contact_id = a.contact_id
+    WHERE ($pipeline = 'All' OR co.origin_pipeline = $pipeline)
+),
+staged AS (            -- stage the lead was in on each activity date
+    SELECT s.user_id, s.act_date, s.contact_id, s.origin_pipeline, ob.stage AS stage_raw
+    FROM acts_scoped s
+    ASOF LEFT JOIN obs1 ob
+      ON s.contact_id = ob.contact_id AND ob.obs_date <= s.act_date
+),
+labelled AS (          -- map raw stage name → funnel column; distinct lead×stage
+    SELECT DISTINCT user_id, contact_id,
+        CASE
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'new lead%'         THEN 'New Lead'
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'follow up 1%'      THEN 'Follow up 1'
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'follow up 2%'      THEN 'Follow up 2'
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'pre sales (1)%'    THEN 'Pre Sales (1)'
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'pre sales (2)%'    THEN 'Pre Sales (2)'
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'booking link%'     THEN 'Booking Link Shared'
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'post consultation%' THEN 'Post Consultation'
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'no show%'          THEN 'No Show'
+            ELSE 'Later Stage'
+        END AS stage_label
+    FROM staged
+)
+SELECT
+    COALESCE(u.full_name, l.user_id)                                   AS employee,
+    COUNT(*)                                                           AS total_worked,
+    COUNT(*) FILTER (WHERE l.stage_label = 'New Lead')                 AS new_lead,
+    COUNT(*) FILTER (WHERE l.stage_label = 'Follow up 1')              AS follow_up_1,
+    COUNT(*) FILTER (WHERE l.stage_label = 'Follow up 2')              AS follow_up_2,
+    COUNT(*) FILTER (WHERE l.stage_label = 'Pre Sales (1)')            AS presales_1,
+    COUNT(*) FILTER (WHERE l.stage_label = 'Pre Sales (2)')            AS presales_2,
+    COUNT(*) FILTER (WHERE l.stage_label = 'Booking Link Shared')      AS booking_link_shared,
+    COUNT(*) FILTER (WHERE l.stage_label = 'Post Consultation')        AS post_consultation,
+    COUNT(*) FILTER (WHERE l.stage_label = 'No Show')                  AS no_show,
+    COUNT(*) FILTER (WHERE l.stage_label = 'Later Stage')              AS later_stage
+FROM labelled l
+LEFT JOIN dim_users u ON u.user_id = l.user_id
+GROUP BY 1
+HAVING COUNT(*) > 0
+ORDER BY total_worked DESC;
+
+
+-- Drill-down for vw_employee_activity: the leads a chosen employee worked, with
+-- the stage on each activity date. Binds: $since, $until, $pipeline. App filters
+-- to the picked employee and adds Source/notes.
+CREATE OR REPLACE VIEW vw_employee_activity_detail AS
+WITH events_obs AS (
+    SELECT contact_id, changed_at AS obs_ts,
+           CAST(changed_at + INTERVAL 10 HOUR AS DATE) AS obs_date, new_stage AS stage
+    FROM fact_opp_stage_events
+    WHERE contact_id IS NOT NULL AND new_stage IS NOT NULL
+),
+first_evt AS (
+    SELECT opportunity_id,
+           arg_min(old_stage, changed_at) FILTER (WHERE old_stage IS NOT NULL) AS init_stage
+    FROM fact_opp_stage_events GROUP BY 1
+),
+init_obs AS (
+    SELECT o.contact_id, o.created_at AS obs_ts,
+           CAST(o.created_at + INTERVAL 10 HOUR AS DATE) AS obs_date, f.init_stage AS stage
+    FROM first_evt f
+    JOIN fact_opportunities o ON o.opportunity_id = f.opportunity_id
+    WHERE f.init_stage IS NOT NULL AND o.contact_id IS NOT NULL AND o.created_at IS NOT NULL
+),
+noevt_obs AS (
+    SELECT o.contact_id, o.created_at AS obs_ts,
+           CAST(o.created_at + INTERVAL 10 HOUR AS DATE) AS obs_date, st.stage_name AS stage
+    FROM fact_opportunities o
+    LEFT JOIN dim_stages st ON st.stage_id = o.stage_id
+    WHERE o.contact_id IS NOT NULL AND o.created_at IS NOT NULL
+      AND o.opportunity_id NOT IN (SELECT opportunity_id FROM fact_opp_stage_events
+                                   WHERE opportunity_id IS NOT NULL)
+),
+obs AS (
+    SELECT * FROM events_obs UNION ALL SELECT * FROM init_obs UNION ALL SELECT * FROM noevt_obs
+),
+obs1 AS (
+    SELECT contact_id, obs_date, arg_max(stage, obs_ts) AS stage
+    FROM obs WHERE obs_date IS NOT NULL GROUP BY 1, 2
+),
+contact_origin AS (
+    SELECT o.contact_id, arg_min(p.pipeline_name, o.created_at) AS origin_pipeline
+    FROM fact_opportunities o
+    JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id
+    WHERE p.pipeline_name IN ('L2C - Education', 'L2C - Skill Migration')
+    GROUP BY 1
+),
+acts AS (
+    SELECT DISTINCT m.user_id,
+           CAST(m.date_added + INTERVAL 10 HOUR AS DATE) AS act_date, m.contact_id
+    FROM fact_messages m
+    WHERE m.user_id IS NOT NULL AND m.contact_id IS NOT NULL
+      AND UPPER(COALESCE(m.message_type, '')) NOT LIKE 'TYPE_ACTIVITY%'
+      AND LOWER(COALESCE(m.direction, '')) <> 'inbound'
+      AND CAST(m.date_added + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
+),
+acts_scoped AS (
+    SELECT a.user_id, a.act_date, a.contact_id, co.origin_pipeline
+    FROM acts a
+    JOIN contact_origin co ON co.contact_id = a.contact_id
+    WHERE ($pipeline = 'All' OR co.origin_pipeline = $pipeline)
+),
+staged AS (
+    SELECT s.user_id, s.act_date, s.contact_id, s.origin_pipeline, ob.stage AS stage_raw
+    FROM acts_scoped s
+    ASOF LEFT JOIN obs1 ob
+      ON s.contact_id = ob.contact_id AND ob.obs_date <= s.act_date
+),
+labelled AS (
+    SELECT user_id, contact_id, act_date, origin_pipeline,
+        CASE
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'new lead%'          THEN 'New Lead'
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'follow up 1%'       THEN 'Follow up 1'
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'follow up 2%'       THEN 'Follow up 2'
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'pre sales (1)%'     THEN 'Pre Sales (1)'
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'pre sales (2)%'     THEN 'Pre Sales (2)'
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'booking link%'      THEN 'Booking Link Shared'
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'post consultation%' THEN 'Post Consultation'
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'no show%'           THEN 'No Show'
+            ELSE 'Later Stage'
+        END AS stage_label
+    FROM staged
+)
+SELECT
+    COALESCE(u.full_name, l.user_id) AS employee,
+    l.contact_id,
+    c.email,
+    c.contact_name,
+    c.phone,
+    l.origin_pipeline AS pipeline,
+    l.act_date,
+    l.stage_label     AS stage_on_activity_date
+FROM labelled l
+LEFT JOIN dim_users u ON u.user_id = l.user_id
+LEFT JOIN fact_contacts c ON c.contact_id = l.contact_id;

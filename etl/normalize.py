@@ -394,6 +394,42 @@ def normalize_messages(raw: list[dict]) -> pd.DataFrame:
     return df
 
 
+def normalize_stage_events(raw: list[dict]) -> pd.DataFrame:
+    """fact_opp_stage_events — reconstruct an opportunity's stage timeline from GHL
+    TYPE_ACTIVITY_OPPORTUNITY activity logs. Each such message carries
+    activity.data = {id, name, status, pipeline, stage:{oldStageName,newStageName}}.
+    We keep any event that records a newStageName (stage moves carry old+new; status
+    changes carry new only — still a valid stage observation at that timestamp)."""
+    rows = []
+    for m in raw:
+        act = m.get("activity")
+        if not isinstance(act, dict):
+            continue
+        data = act.get("data")
+        if not isinstance(data, dict):
+            continue
+        stage = data.get("stage")
+        if not isinstance(stage, dict):
+            continue
+        new_stage = stage.get("newStageName")
+        if not new_stage:
+            continue
+        rows.append({
+            "event_id":       _to_str(m.get("id")),
+            "opportunity_id": _to_str(data.get("id")),
+            "contact_id":     _to_str(m.get("contactId")),
+            "pipeline":       data.get("pipeline"),
+            "old_stage":      stage.get("oldStageName"),
+            "new_stage":      new_stage,
+            "changed_at":     _ts(m.get("dateAdded")),
+        })
+    df = pd.DataFrame(rows, columns=["event_id", "opportunity_id", "contact_id",
+                                     "pipeline", "old_stage", "new_stage", "changed_at"])
+    if not df.empty:
+        df = df.dropna(subset=["event_id", "opportunity_id"]).drop_duplicates(subset=["event_id"])
+    return df
+
+
 def normalize_opportunity_followers(raw: list[dict]) -> pd.DataFrame:
     """fact_opportunity_followers — one row per (opportunity_id, follower_user_id),
     exploded from each opportunity's `followers` array."""
