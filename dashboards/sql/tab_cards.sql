@@ -2258,12 +2258,15 @@ WITH cohort AS (
                ELSE 6
            END AS rnk
     FROM fact_opportunities o
-    JOIN fact_opportunity_followers f ON f.opportunity_id = o.opportunity_id
+    -- LEFT JOIN so opps with NO follower (mostly new leads not yet picked up)
+    -- fall into an 'Unassigned' bucket rather than vanishing from the funnel.
+    LEFT JOIN fact_opportunity_followers f ON f.opportunity_id = o.opportunity_id
     LEFT JOIN dim_stages st ON st.stage_id = o.stage_id
     WHERE CAST(o.created_at + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
 )
 SELECT
-    COALESCE(u.full_name, c.follower_user_id)      AS follower,
+    CASE WHEN c.follower_user_id IS NULL THEN 'Unassigned'
+         ELSE COALESCE(u.full_name, c.follower_user_id) END AS follower,
     COUNT(*)                                       AS total_opps,
     COUNT(*)                                       AS new_leads,
     COUNT(*) FILTER (WHERE rnk >= 2)               AS presales_1,
