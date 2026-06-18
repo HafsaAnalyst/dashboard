@@ -186,6 +186,33 @@ def fetch_opportunities(since: str, until: Optional[str] = None) -> list[dict]:
     return in_range
 
 
+def fetch_conversation_messages(conversation_id: str, limit: int = 100,
+                                max_pages: int = 20) -> list[dict]:
+    """All messages in one conversation. Each message carries `userId` (the staff
+    member who performed it — None for system/automation logs), `messageType`
+    (TYPE_CALL / TYPE_SMS / TYPE_EMAIL / TYPE_ACTIVITY_* / ...), `direction` and
+    `dateAdded`. Powers fact_messages → per-person activity attribution."""
+    out: list[dict] = []
+    last_id = None
+    for _ in range(max_pages):
+        params: dict = {"limit": limit}
+        if last_id:
+            params["lastMessageId"] = last_id
+        r = requests.get(f"{BASE_URL}/conversations/{conversation_id}/messages",
+                         headers=_headers(), params=params, timeout=HTTP_TIMEOUT)
+        if r.status_code != 200:
+            break
+        body = r.json().get("messages", {})
+        arr = body.get("messages", []) if isinstance(body, dict) else (body or [])
+        if not arr:
+            break
+        out.extend(arr)
+        if len(arr) < limit or not (isinstance(body, dict) and body.get("nextPage")):
+            break
+        last_id = arr[-1].get("id")
+    return out
+
+
 def fetch_appointments(since: str, until: Optional[str] = None) -> list[dict]:
     """Calendar events for every calendar in the location, in [since, until].
     Each event keeps `calendarId` so consultant mapping happens downstream."""

@@ -215,7 +215,27 @@ def extract_ghl(con, since: str, until: str) -> dict:
             upsert_df(con, "fact_conversations", conv_df, "conversation_id")
             summary["fact_conversations"] = len(conv_df)
         except Exception as e:
+            conv_raw = []
             logger.exception("GHL conversations failed: %s", e)
+
+        # Messages within the active conversations (those with a message since
+        # `since`) → fact_messages, so we know WHICH staff member performed each
+        # call / SMS / email / DM and WHEN (the basis for follower activity).
+        try:
+            msg_rows = []
+            for cv in conv_raw:
+                cvid = cv.get("id")
+                if not cvid:
+                    continue
+                try:
+                    msg_rows.extend(ghl.fetch_conversation_messages(cvid))
+                except Exception:
+                    continue
+            msg_df = normalize.normalize_messages(msg_rows)
+            upsert_df(con, "fact_messages", msg_df, "message_id")
+            summary["fact_messages"] = len(msg_df)
+        except Exception as e:
+            logger.exception("GHL messages failed: %s", e)
 
         return summary
     except Exception as e:

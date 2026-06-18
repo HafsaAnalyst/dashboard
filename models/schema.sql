@@ -133,6 +133,20 @@ CREATE TABLE IF NOT EXISTS fact_opportunity_followers (
     PRIMARY KEY (opportunity_id, follower_user_id)
 );
 
+-- Grain: 1 row per GHL conversation message (call / SMS / email / DM / activity
+-- log). `user_id` = the staff member who performed it (NULL for system/automation
+-- logs like TYPE_ACTIVITY_OPPORTUNITY). Powers per-person activity attribution
+-- (Follower Performance), distinct from the conversation-level fact_conversations.
+CREATE TABLE IF NOT EXISTS fact_messages (
+    message_id        VARCHAR PRIMARY KEY,
+    conversation_id   VARCHAR,
+    contact_id        VARCHAR,
+    user_id           VARCHAR,        -- staff actor; NULL = system/automation
+    message_type      VARCHAR,        -- TYPE_CALL | TYPE_SMS | TYPE_EMAIL | ...
+    direction         VARCHAR,        -- inbound | outbound
+    date_added        TIMESTAMP
+);
+
 -- Grain: 1 row per GHL calendar event (appointment).
 -- canonical_outcome bucketises GHL's appointmentStatus into 4 stable values:
 --   show | noshow | cancelled | pending

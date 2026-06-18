@@ -373,6 +373,27 @@ def normalize_opportunities(raw: list[dict], stage_name_by_id: dict) -> pd.DataF
     return df
 
 
+def normalize_messages(raw: list[dict]) -> pd.DataFrame:
+    """fact_messages — 1 row per conversation message. user_id is the staff actor
+    (None for system/automation logs); dateAdded is an ISO timestamp here."""
+    rows = []
+    for m in raw:
+        rows.append({
+            "message_id":      _to_str(m.get("id")),
+            "conversation_id": _to_str(m.get("conversationId")),
+            "contact_id":      _to_str(m.get("contactId")),
+            "user_id":         _to_str(m.get("userId")),
+            "message_type":    m.get("messageType") or m.get("type"),
+            "direction":       m.get("direction"),
+            "date_added":      _ts(m.get("dateAdded")),
+        })
+    df = pd.DataFrame(rows, columns=["message_id", "conversation_id", "contact_id",
+                                     "user_id", "message_type", "direction", "date_added"])
+    if not df.empty:
+        df = df.dropna(subset=["message_id"]).drop_duplicates(subset=["message_id"])
+    return df
+
+
 def normalize_opportunity_followers(raw: list[dict]) -> pd.DataFrame:
     """fact_opportunity_followers — one row per (opportunity_id, follower_user_id),
     exploded from each opportunity's `followers` array."""

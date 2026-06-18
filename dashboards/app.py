@@ -6493,68 +6493,92 @@ with tab_funnels1:
 with tab_follower:
     st.markdown(
         "<div class='panel-title'>Follower Performance"
-        "<span class='hint'>presales agents · opportunities they addressed in the selected duration</span>"
-        "</div>", unsafe_allow_html=True)
+        "<span class='hint'>lead funnel + per-agent activity</span></div>",
+        unsafe_allow_html=True)
 
-    fp = run_df("vw_follower_performance",
-                {"since": since.isoformat(), "until": until.isoformat()})
-    if fp.empty or "follower" not in fp.columns:
-        st.info("No opportunities were addressed by any follower in this window "
-                "(or the follower data hasn't been backfilled yet).")
+    # ===== Table 1: Lead funnel (cohort of leads CREATED in the period) =====
+    st.markdown("#### 📉 Lead funnel — leads created in the selected duration")
+    fc = run_df("vw_funnel_cohort",
+                {"since": since.isoformat(), "until": until.isoformat(), "city": city})
+    if fc.empty or int(fc["total_opps"].iloc[0]) == 0:
+        st.info("No opportunities were created in this duration.")
     else:
-        fp_disp = pd.DataFrame({
-            "Follower":            fp["follower"].fillna("—").values,
-            "Total Opps":          fp["total_opps"].astype(int).values,
-            "New Leads":           fp["new_leads"].astype(int).values,
-            "Pre Sales (1)":       fp["presales_1"].astype(int).values,
-            "Pre Sales (2)":       fp["presales_2"].astype(int).values,
-            "Booking Link Shared": fp["booking_link_shared"].astype(int).values,
-            "Post Consultation":   fp["post_consultation"].astype(int).values,
-            "No Show":             fp["no_show"].astype(int).values,
-            "Lost":                fp["lost"].astype(int).values,
-            "Open":                fp["open_opps"].astype(int).values,
-        })
-        st.dataframe(fp_disp, hide_index=True, use_container_width=True,
-                     height=min(560, 70 + 36 * len(fp_disp)))
+        r0 = fc.iloc[0]
+        _tot = int(r0["total_opps"]) or 1
+        def _pcf(n): return f"{int(n):,} · {int(n) / _tot * 100:.0f}%"
+        funnel = pd.DataFrame([{
+            "Total Leads":         f"{int(r0['total_opps']):,}",
+            "New Leads":           f"{int(r0['new_leads']):,}",
+            "Pre Sales (1)":       _pcf(r0["presales_1"]),
+            "Pre Sales (2)":       _pcf(r0["presales_2"]),
+            "Booking Link Shared": _pcf(r0["booking_link_shared"]),
+            "Post Consultation":   _pcf(r0["post_consultation"]),
+            "No Show":             _pcf(r0["no_show"]),
+            "Lost":                _pcf(r0["lost"]),
+            "Open":                _pcf(r0["open_opps"]),
+        }])
+        st.dataframe(funnel, hide_index=True, use_container_width=True)
         st.caption(
-            "**Addressed** = any activity on the lead in the selected duration — a stage/status "
-            "move on the opportunity **or** a call / SMS / DM / email on the contact. Stage & "
-            "Lost/Open reflect the state **as of the range end**: an opp that only moved into its "
-            "current stage *after* the range isn't credited that stage (it was in an earlier "
-            "stage then). Follower = the GHL **Followers** on the opportunity (the presales "
-            "agents), not the owner — shown as the *current* followers, since GHL keeps no "
-            "follower history, so a recently-added follower may appear for older activity.")
+            f"Cohort = the **{int(r0['total_opps']):,} opportunities created** in the selected "
+            "duration. Each stage = how many **reached that stage or beyond** (cumulative, by "
+            "stage order) with the % of the cohort. No Show / Lost / Open are current snapshots.")
 
-        # ---- Drill-down: pick a follower → the contacts they addressed ----
+    # ===== Table 2: Activity by agent (who personally worked each lead) =====
+    st.markdown("---")
+    st.markdown("#### 🧑‍💼 Activity by agent — leads each person worked on in the duration")
+    fa = run_df("vw_follower_activity",
+                {"since": since.isoformat(), "until": until.isoformat()})
+    if fa.empty or "follower" not in fa.columns:
+        st.info("No agent activity recorded in this duration "
+                "(or message-level data hasn't been backfilled yet).")
+    else:
+        fa_disp = pd.DataFrame({
+            "Agent":               fa["follower"].fillna("—").values,
+            "Total Opps":          fa["total_opps"].astype(int).values,
+            "New Leads":           fa["new_leads"].astype(int).values,
+            "Pre Sales (1)":       fa["presales_1"].astype(int).values,
+            "Pre Sales (2)":       fa["presales_2"].astype(int).values,
+            "Booking Link Shared": fa["booking_link_shared"].astype(int).values,
+            "Post Consultation":   fa["post_consultation"].astype(int).values,
+            "No Show":             fa["no_show"].astype(int).values,
+            "Lost":                fa["lost"].astype(int).values,
+            "Open":                fa["open_opps"].astype(int).values,
+        })
+        st.dataframe(fa_disp, hide_index=True, use_container_width=True,
+                     height=min(560, 70 + 36 * len(fa_disp)))
+        st.caption(
+            "Each row = a staff member and the opportunities they **personally performed an "
+            "activity on** (a call / SMS / email / DM they logged) in the selected duration — "
+            "attributed by **who did the action** (message actor), excluding automated logs. "
+            "Stage & Lost/Open reflect the opp's state **as of the range end** (an opp that moved "
+            "into its current stage *after* the range isn't credited that stage).")
+
+        # ---- Drill-down: pick an agent → the leads they worked on ----
         st.markdown("---")
-        pick = st.selectbox("Show contacts addressed by",
-                            ["—"] + list(fp["follower"].fillna("—").values),
+        pick = st.selectbox("Show leads worked on by",
+                            ["—"] + list(fa["follower"].fillna("—").values),
                             key="follower_pick")
         if pick and pick != "—":
-            det = run_df("vw_follower_detail",
+            det = run_df("vw_follower_activity_detail",
                          {"since": since.isoformat(), "until": until.isoformat()})
             det = det[det["follower"] == pick].copy() if not det.empty else det
             if det.empty:
-                st.caption("No contacts for this follower in the window.")
+                st.caption("No leads for this agent in the duration.")
             else:
-                # Source (refined_source) + notes from the Executive lead-detail
-                # logic, keyed by contact (same as the other tabs).
                 _src = run_df("vw_exec1_lead_detail",
                               {"since": "2024-01-01", "until": until.isoformat()})
                 _smap = dict(zip(_src["contact_id"], _src["refined_source"])) if not _src.empty else {}
                 _nmap = dict(zip(_src["contact_id"], _src["notes"]))          if not _src.empty else {}
                 out = pd.DataFrame({
-                    "Email":       det["email"].fillna("—").values,
-                    "Name":        det["contact_name"].fillna("—").values,
-                    "Phone":       det["phone"].fillna("—").values,
-                    "Source":      det["contact_id"].map(_smap).fillna("—").replace("", "—").values,
-                    "Pipeline":    det["pipeline"].fillna("—").values,
-                    "Stage":       det["stage"].fillna("—").values,
-                    "Status":      det["status"].fillna("—").values,
-                    "Notes":       det["contact_id"].map(_nmap).fillna(det["opportunity"]).fillna("—").values,
-                    "Last Update": det["last_update"].astype(str).values,
-                })
-                st.dataframe(out.sort_values("Last Update", ascending=False),
-                             hide_index=True, use_container_width=True, height=460)
-                st.caption(f"{len(out):,} opportunities addressed by **{pick}** in the window. "
+                    "Email":    det["email"].fillna("—").values,
+                    "Name":     det["contact_name"].fillna("—").values,
+                    "Phone":    det["phone"].fillna("—").values,
+                    "Source":   det["contact_id"].map(_smap).fillna("—").replace("", "—").values,
+                    "Pipeline": det["pipeline"].fillna("—").values,
+                    "Stage":    det["stage"].fillna("—").values,
+                    "Status":   det["status"].fillna("—").values,
+                    "Notes":    det["contact_id"].map(_nmap).fillna(det["opportunity"]).fillna("—").values,
+                }).drop_duplicates()
+                st.dataframe(out, hide_index=True, use_container_width=True, height=460)
+                st.caption(f"{len(out):,} leads **{pick}** performed an activity on in the duration. "
                            "Source = same refined-source logic as the Executive tab.")

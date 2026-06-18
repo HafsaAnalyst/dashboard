@@ -2198,48 +2198,72 @@ LEFT JOIN lf ON lf.contact_id = pay.contact_id AND lf.rn = 1;
 
 
 -- =====================================================================
--- FOLLOWER PERFORMANCE — presales agents (GHL opportunity "followers")
+-- FOLLOWER PERFORMANCE — two views
 -- =====================================================================
--- "Addressed" = ANY activity on the opp's lead within [since, until] (AEST):
---   * the opportunity changed (updated_at / last stage or status change), OR
---   * the contact had a conversation activity (call / SMS / DM / email).
--- A logged CALL does NOT bump the opportunity's updated_at, so we must also look
--- at the contact's conversation activity — otherwise an old lead followed-up via
--- a call (but not moved) would be missed. Stage columns bucket the addressed opps
--- by their CURRENT stage; lost/open by current status. Binds: $since, $until.
+
+-- TABLE 1: Lead funnel (cohort). Of the opportunities CREATED in [since, until],
+-- how many REACHED each presales stage (cumulative, by stage rank — an opp now in
+-- a later stage counts toward every earlier one). New Leads = whole cohort. No
+-- Show / Lost / Open are current terminal/status snapshots. Binds: $since,$until.
 -- ---------------------------------------------------------------------
-CREATE OR REPLACE VIEW vw_follower_performance AS
-WITH conv_act AS (
-    SELECT contact_id, MAX(last_message_at) AS last_activity
-    FROM fact_conversations WHERE contact_id IS NOT NULL
-    GROUP BY contact_id
-),
-addressed AS (
-    SELECT f.follower_user_id,
+CREATE OR REPLACE VIEW vw_funnel_cohort AS
+WITH cohort AS (
+    SELECT o.opportunity_id,
+           LOWER(COALESCE(o.status, ''))      AS status,
+           LOWER(COALESCE(st.stage_name, '')) AS stage,
+           CASE
+               WHEN LOWER(COALESCE(st.stage_name,'')) LIKE 'new lead%'          THEN 1
+               WHEN LOWER(COALESCE(st.stage_name,'')) LIKE 'no show%'           THEN 1
+               WHEN LOWER(COALESCE(st.stage_name,'')) LIKE 'pre sales (1)%'     THEN 2
+               WHEN LOWER(COALESCE(st.stage_name,'')) LIKE 'pre sales (2)%'     THEN 3
+               WHEN LOWER(COALESCE(st.stage_name,'')) LIKE 'booking link%'      THEN 4
+               WHEN LOWER(COALESCE(st.stage_name,'')) LIKE 'post consultation%' THEN 5
+               ELSE 6   -- progressed beyond presales (admission / won / etc.)
+           END AS rnk
+    FROM fact_opportunities o
+    LEFT JOIN dim_stages st ON st.stage_id = o.stage_id
+    WHERE CAST(o.created_at + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
+)
+SELECT
+    COUNT(*)                                       AS total_opps,
+    COUNT(*)                                       AS new_leads,
+    COUNT(*) FILTER (WHERE rnk >= 2)               AS presales_1,
+    COUNT(*) FILTER (WHERE rnk >= 3)               AS presales_2,
+    COUNT(*) FILTER (WHERE rnk >= 4)               AS booking_link_shared,
+    COUNT(*) FILTER (WHERE rnk >= 5)               AS post_consultation,
+    COUNT(*) FILTER (WHERE stage LIKE 'no show%')  AS no_show,
+    COUNT(*) FILTER (WHERE status = 'lost')        AS lost,
+    COUNT(*) FILTER (WHERE status = 'open')        AS open_opps
+FROM cohort
+WHERE COALESCE($city, '') IS NOT NULL;  -- $city unused (site-wide); reference for binds
+
+
+-- TABLE 2: Follower activity. Per staff member, the opportunities they personally
+-- performed an activity on within [since, until] — attributed by the message
+-- ACTOR (fact_messages.user_id), excluding system/automation logs. Stage/status
+-- columns use the point-in-time guard (don't credit a stage entered after the
+-- range). Binds: $since, $until.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE VIEW vw_follower_activity AS
+WITH acts AS (
+    SELECT DISTINCT
+           m.user_id,
            o.opportunity_id,
            LOWER(COALESCE(o.status, ''))      AS status,
            LOWER(COALESCE(st.stage_name, '')) AS stage,
-           -- Point-in-time guard: only credit the CURRENT stage/status to a past
-           -- range if the opp was already in it by the range END. If it moved
-           -- into the current stage/status AFTER the range, it was in an earlier
-           -- (unknown — no stage history) state during the range, so don't credit
-           -- the current one. (Followers are still current — GHL has no follower
-           -- history.)
            (o.last_stage_change_at IS NULL
             OR CAST(o.last_stage_change_at + INTERVAL 10 HOUR AS DATE) <= $until)  AS stage_asof,
            (o.last_status_change_at IS NULL
             OR CAST(o.last_status_change_at + INTERVAL 10 HOUR AS DATE) <= $until) AS status_asof
-    FROM fact_opportunity_followers f
-    JOIN fact_opportunities o ON o.opportunity_id = f.opportunity_id
+    FROM fact_messages m
+    JOIN fact_opportunities o ON o.contact_id = m.contact_id
     LEFT JOIN dim_stages st ON st.stage_id = o.stage_id
-    LEFT JOIN conv_act ca ON ca.contact_id = o.contact_id
-    WHERE CAST(o.updated_at            + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
-       OR CAST(o.last_stage_change_at  + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
-       OR CAST(o.last_status_change_at + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
-       OR CAST(ca.last_activity        + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
+    WHERE m.user_id IS NOT NULL
+      AND UPPER(COALESCE(m.message_type, '')) NOT LIKE 'TYPE_ACTIVITY%'  -- exclude system logs
+      AND CAST(m.date_added + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
 )
 SELECT
-    COALESCE(u.full_name, a.follower_user_id)                                 AS follower,
+    COALESCE(u.full_name, a.user_id)                                          AS follower,
     COUNT(*)                                                                  AS total_opps,
     COUNT(*) FILTER (WHERE a.stage_asof AND a.stage LIKE 'new lead%')          AS new_leads,
     COUNT(*) FILTER (WHERE a.stage_asof AND a.stage LIKE 'pre sales (1)%')     AS presales_1,
@@ -2249,44 +2273,37 @@ SELECT
     COUNT(*) FILTER (WHERE a.stage_asof AND a.stage LIKE 'no show%')           AS no_show,
     COUNT(*) FILTER (WHERE a.status_asof AND a.status = 'lost')                AS lost,
     COUNT(*) FILTER (WHERE a.status_asof AND a.status = 'open')                AS open_opps
-FROM addressed a
-LEFT JOIN dim_users u ON u.user_id = a.follower_user_id
+FROM acts a
+LEFT JOIN dim_users u ON u.user_id = a.user_id
 GROUP BY 1
 HAVING COUNT(*) > 0
 ORDER BY total_opps DESC;
 
 
--- Per-contact detail for one follower's addressed opps (drill-down).
--- Binds: $since, $until. The app filters to the picked follower and adds the
--- Source (refined_source) + notes from vw_exec1_lead_detail by contact_id.
-CREATE OR REPLACE VIEW vw_follower_detail AS
-WITH conv_act AS (
-    SELECT contact_id, MAX(last_message_at) AS last_activity
-    FROM fact_conversations WHERE contact_id IS NOT NULL
-    GROUP BY contact_id
+-- Drill-down: the contacts/opps a given staff member acted on in the range.
+-- Binds: $since, $until. App filters to the picked follower; adds Source/notes.
+CREATE OR REPLACE VIEW vw_follower_activity_detail AS
+WITH acts AS (
+    SELECT DISTINCT m.user_id, o.opportunity_id, o.contact_id
+    FROM fact_messages m
+    JOIN fact_opportunities o ON o.contact_id = m.contact_id
+    WHERE m.user_id IS NOT NULL
+      AND UPPER(COALESCE(m.message_type, '')) NOT LIKE 'TYPE_ACTIVITY%'
+      AND CAST(m.date_added + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
 )
 SELECT
-    COALESCE(u.full_name, f.follower_user_id) AS follower,
-    o.contact_id,
+    COALESCE(u.full_name, a.user_id) AS follower,
+    a.contact_id,
     c.email,
     c.contact_name,
     c.phone,
     p.pipeline_name    AS pipeline,
     st.stage_name      AS stage,
     o.status,
-    o.opportunity_name AS opportunity,
-    -- Last touch = the most recent of the opp's own update and the contact's
-    -- conversation activity (so a call shows even when the opp didn't move).
-    CAST(GREATEST(o.updated_at, COALESCE(ca.last_activity, o.updated_at))
-         + INTERVAL 10 HOUR AS DATE) AS last_update
-FROM fact_opportunity_followers f
-JOIN fact_opportunities o ON o.opportunity_id = f.opportunity_id
+    o.opportunity_name AS opportunity
+FROM acts a
+JOIN fact_opportunities o ON o.opportunity_id = a.opportunity_id
 LEFT JOIN dim_stages st ON st.stage_id = o.stage_id
 LEFT JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id
-LEFT JOIN dim_users u ON u.user_id = f.follower_user_id
-LEFT JOIN fact_contacts c ON c.contact_id = o.contact_id
-LEFT JOIN conv_act ca ON ca.contact_id = o.contact_id
-WHERE CAST(o.updated_at            + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
-   OR CAST(o.last_stage_change_at  + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
-   OR CAST(o.last_status_change_at + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
-   OR CAST(ca.last_activity        + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until;
+LEFT JOIN dim_users u ON u.user_id = a.user_id
+LEFT JOIN fact_contacts c ON c.contact_id = a.contact_id;
