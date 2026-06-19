@@ -1843,7 +1843,14 @@ SELECT * REPLACE (
     -- lead_date is an OLD appointment (e.g. a contact who booked months ago and
     -- only filled the form / revived now) — not a booking driven by this lead.
     CASE WHEN appt_booked = 1 AND appt_booked_date >= lead_date THEN 1 ELSE 0 END AS appt_booked,
-    CASE WHEN appt_showed = 1 AND appt_booked_date >= lead_date THEN 1 ELSE 0 END AS appt_showed
+    CASE WHEN appt_showed = 1 AND appt_booked_date >= lead_date THEN 1 ELSE 0 END AS appt_showed,
+    -- ...and blank the appointment's display fields (created date / calendar /
+    -- status / title) for that same pre-revival case, so the table shows the
+    -- RECENT (post-revival) appointment only — never an old one the lead booked
+    -- before being revived.
+    CASE WHEN appt_booked_date >= lead_date THEN appt_booked_date ELSE NULL END AS appt_booked_date,
+    CASE WHEN appt_booked_date >= lead_date THEN calendar_name     ELSE NULL END AS calendar_name,
+    CASE WHEN appt_booked_date >= lead_date THEN appt_status       ELSE NULL END AS appt_status
 )
 FROM (
 SELECT
