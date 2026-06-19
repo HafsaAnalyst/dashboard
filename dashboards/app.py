@@ -6598,7 +6598,13 @@ with tab_follower:
 
         # ---- Dynamic breakdown for the active scorecard ----
         if active == "noshow":
-            # No Show drills to the EMAIL-level list of the leads worked while in No Show.
+            # No Show drills to a by-follower summary + the EMAIL-level list.
+            st.markdown("##### No Show — by Follower / Owner")
+            _nb = ea[["employee", "no_show"]].copy().sort_values("no_show", ascending=False)
+            _nb = _nb.rename(columns={"employee": "Follower / Owner", "no_show": "No Show"})
+            st.dataframe(_nb, hide_index=True, use_container_width=True,
+                         height=min(320, 70 + 36 * len(_nb)))
+
             st.markdown("##### No Show — leads (by email) worked on while in No Show")
             det = run_df("vw_employee_activity_detail",
                          {"since": since.isoformat(), "until": until.isoformat(),
