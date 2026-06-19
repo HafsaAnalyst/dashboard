@@ -2542,3 +2542,79 @@ SELECT
 FROM labelled l
 LEFT JOIN dim_users u ON u.user_id = l.user_id
 LEFT JOIN fact_contacts c ON c.contact_id = l.contact_id;
+
+
+-- =====================================================================
+-- Funnels_1 — lead progression funnel (one row of counts). Binds $since/$until.
+-- Cohort = "Leads": contacts who entered at New Lead / New Lead-Assigned-to-
+-- Nurturer in L2C-Education or L2C-Skill-Migration, created OR revived in range.
+-- Each later stage = how many of those leads EVER reached that milestone
+-- (stage history across all their opps + current stage), so the funnel shrinks.
+--   Leads → Pre Sales/Follow-up → Open → Booked → Showed → COE Received
+-- Booked/Showed = appointment CREATED in the range (any pipeline). COE follows
+-- the Conversions definition (COE Received / Initial Received or Won in
+-- L2C-Education / CLT-Onshore Admission).
+-- =====================================================================
+CREATE OR REPLACE VIEW vw_funnel1 AS
+WITH revived AS (
+    SELECT contact_id FROM (
+        SELECT contact_id, MAX(submitted_at) AS ms FROM (
+            SELECT contact_id, submitted_at FROM fact_form_submissions   WHERE contact_id IS NOT NULL
+            UNION ALL
+            SELECT contact_id, submitted_at FROM fact_survey_submissions WHERE contact_id IS NOT NULL
+        ) GROUP BY 1
+    ) WHERE CAST(ms + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
+),
+cohort AS (
+    SELECT DISTINCT o.contact_id
+    FROM fact_opportunities o
+    JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id
+         AND p.pipeline_name IN ('L2C - Education', 'L2C - Skill Migration')
+    WHERE o.contact_id IS NOT NULL
+      AND (CAST(o.created_at + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
+           OR o.contact_id IN (SELECT contact_id FROM revived))
+),
+seen AS (   -- every stage a cohort contact has ever been in (current + transitions)
+    SELECT contact_id, LOWER(stage) AS stage FROM (
+        SELECT o.contact_id, s.stage_name AS stage
+        FROM fact_opportunities o JOIN dim_stages s ON s.stage_id = o.stage_id
+        UNION ALL SELECT contact_id, new_stage FROM fact_opp_stage_events
+        UNION ALL SELECT contact_id, old_stage FROM fact_opp_stage_events
+    ) WHERE contact_id IN (SELECT contact_id FROM cohort) AND stage IS NOT NULL
+),
+presales AS (
+    SELECT DISTINCT contact_id FROM seen
+    WHERE stage IN ('pre sales (1)', 'pre sales (2)', 'follow up 1', 'follow up 2')
+),
+open_opp AS (
+    SELECT DISTINCT contact_id FROM fact_opportunities
+    WHERE contact_id IN (SELECT contact_id FROM cohort)
+      AND LOWER(COALESCE(status, 'open')) = 'open'
+),
+appt AS (   -- appointment CREATED in range (any pipeline), not invalid
+    SELECT contact_id,
+           MAX(1)                                                          AS booked,
+           MAX(CASE WHEN LOWER(canonical_outcome) = 'show' THEN 1 ELSE 0 END) AS showed
+    FROM fact_appointments
+    WHERE contact_id IN (SELECT contact_id FROM cohort)
+      AND LOWER(COALESCE(appointment_status, '')) <> 'invalid'
+      AND CAST(date_added + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
+    GROUP BY contact_id
+),
+coe AS (
+    SELECT DISTINCT contact_id FROM (
+        SELECT contact_id FROM seen WHERE stage IN ('coe received', 'initial received')
+        UNION ALL
+        SELECT o.contact_id FROM fact_opportunities o
+        JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id
+             AND p.pipeline_name IN ('L2C - Education', 'CLT - Onshore Admission')
+        WHERE LOWER(o.status) = 'won'
+    ) WHERE contact_id IN (SELECT contact_id FROM cohort)
+)
+SELECT
+    (SELECT COUNT(*) FROM cohort)                AS leads,
+    (SELECT COUNT(*) FROM presales)              AS presales,
+    (SELECT COUNT(*) FROM open_opp)              AS open_opps,
+    (SELECT COUNT(*) FROM appt WHERE booked = 1) AS booked,
+    (SELECT COUNT(*) FROM appt WHERE showed = 1) AS showed,
+    (SELECT COUNT(*) FROM coe)                   AS coe;

@@ -6414,19 +6414,22 @@ with tab_funnels1:
                "everything else → Other). **Opportunities Created** & **Opportunity Status** "
                "are opportunity-level; the rest are contact-level.")
 
-    # ===== Opportunity funnel (created + revived) =====
+    # ===== Lead progression funnel =====
     import altair as _alt
     st.markdown("---")
-    st.markdown("### 🔻 Opportunity funnel — created + revived")
-    if fopps.empty or _ll.empty:
-        st.caption("No created/revived opportunities in this window.")
+    st.markdown("### 🔻 Lead funnel — Leads → Pre Sales → Booked → Showed → COE")
+    _fn = run_df("vw_funnel1", {"since": since.isoformat(), "until": until.isoformat()})
+    _leads0 = int(_fn["leads"].iloc[0]) if not _fn.empty else 0
+    if _fn.empty or _leads0 == 0:
+        st.caption("No leads (New Lead / Assigned-to-Nurturer in L2C-Education / "
+                   "L2C-Skill-Migration) created or revived in this window.")
     else:
-        n1 = int(_ll.size)
-        _ncnt = [n1] + [int((_ll >= L).sum()) for L in (2, 3, 4, 5, 6)]
-        _stages = ["Opportunities", "Qualifier", "Pre Sales (1+2)", "Booked",
-                   "Payment", "Won / COE / Submitted"]
+        r0 = _fn.iloc[0]
+        _stages = ["Leads", "Pre Sales / Follow-up", "Open", "Booked", "Showed", "COE Received"]
+        _ncnt = [int(r0["leads"]), int(r0["presales"]), int(r0["open_opps"]),
+                 int(r0["booked"]), int(r0["showed"]), int(r0["coe"])]
         _fun = pd.DataFrame({"Stage": _stages, "Count": _ncnt})
-        _fun["Pct"] = _fun["Count"] / (n1 if n1 else 1)
+        _fun["Pct"] = _fun["Count"] / (_leads0 if _leads0 else 1)
         _fun["Label"] = _fun.apply(lambda r: f"{int(r['Count']):,}  ({r['Pct']*100:.0f}%)", axis=1)
         _b = _alt.Chart(_fun).encode(
             y=_alt.Y("Stage:N", sort=_stages, title=None,
@@ -6443,11 +6446,13 @@ with tab_funnels1:
         st.altair_chart((_bars + _txt).properties(height=290).configure_view(strokeWidth=0),
                         use_container_width=True)
         st.caption(
-            "Distinct **leads** (created/revived opps), by furthest milestone. **Qualifier** = L2C-Edu ≥ "
-            "*Qualifier* · **Pre Sales (1+2)** = L2C-Edu ≥ *Pre Sales (1)* · **Booked** = L2C-Edu ≥ "
-            "*Appointment Booked* or L2C-VISA ≥ *MARA Appointment Booked* · **Payment** = CLT-Onshore ≥ "
-            "*COE Payment Received* or CLT-VISA ≥ *Payment Received* · **Won / COE / Submitted** = *Won*, "
-            "*COE Received* (L2C-Edu / CLT-Onshore), or CLT-VISA ≥ *Application Submitted*.")
+            "Distinct **leads** that entered at *New Lead / Assigned to Nurturer* in **L2C-Education** "
+            "or **L2C-Skill-Migration** (created or revived in range), and how many **ever reached** each "
+            "milestone. **Pre Sales / Follow-up** = reached Pre Sales (1)/(2) or Follow up 1/2 · "
+            "**Open** = lead still has an open opportunity · **Booked** = has an appointment **created in "
+            "the range** (any pipeline) · **Showed** = that appointment was attended · **COE Received** = "
+            "reached COE / Initial Received or Won in L2C-Education / CLT-Onshore (same logic as "
+            "Conversions). %s are of Leads." % "Percentages")
 
     # ===== Avg days in stage — by pipeline =====
     st.markdown("### ⏳ Avg days in stage — by pipeline")
