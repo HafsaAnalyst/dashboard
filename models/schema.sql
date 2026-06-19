@@ -161,6 +161,17 @@ CREATE TABLE IF NOT EXISTS fact_opp_stage_events (
     changed_at        TIMESTAMP
 );
 
+-- Materialized point-in-time stage timeline: 1 row per (contact_id, AEST date)
+-- holding the stage that contact's journey was in on that day (latest observation
+-- that day, across all its opps). Rebuilt each ETL run from fact_opp_stage_events
+-- + fact_opportunities so the Follower Performance views just ASOF-join this
+-- instead of rebuilding the whole timeline live (~4s → <1s per query).
+CREATE TABLE IF NOT EXISTS fact_stage_observations (
+    contact_id        VARCHAR,
+    obs_date          DATE,
+    stage             VARCHAR
+);
+
 -- Grain: 1 row per GHL calendar event (appointment).
 -- canonical_outcome bucketises GHL's appointmentStatus into 4 stable values:
 --   show | noshow | cancelled | pending

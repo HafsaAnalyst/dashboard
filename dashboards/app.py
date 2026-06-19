@@ -6500,6 +6500,10 @@ with tab_follower:
 
     # This tab shows ONLY these employees, everywhere.
     ALLOWED = ["Syeda Ume Abiha", "Tehreem Ghouri", "Ali Ijaz"]
+    # Drill-down source/notes lookup: leads worked now were created within ~18mo;
+    # bounding the range keeps vw_exec1_lead_detail from scanning all of history
+    # (that full scan was ~12s; bounded it's ~2s).
+    _SRC_SINCE = (until - timedelta(days=540)).isoformat()
 
     # Tab-wide starting-pipeline filter (applies to scorecards + activity table).
     _pipe_lbl = st.radio(
@@ -6616,7 +6620,7 @@ with tab_follower:
                 st.caption("No No-Show activity in this duration for the selected pipeline.")
             else:
                 _src = run_df("vw_exec1_lead_detail",
-                              {"since": "2024-01-01", "until": until.isoformat()})
+                              {"since": _SRC_SINCE, "until": until.isoformat()})
                 _smap = dict(zip(_src["contact_id"], _src["refined_source"])) if not _src.empty else {}
                 det = det.sort_values("act_date", ascending=False)
                 _ns = pd.DataFrame({
@@ -6690,7 +6694,7 @@ with tab_follower:
                 st.caption("No leads for this employee in the duration.")
             else:
                 _src = run_df("vw_exec1_lead_detail",
-                              {"since": "2024-01-01", "until": until.isoformat()})
+                              {"since": _SRC_SINCE, "until": until.isoformat()})
                 _smap = dict(zip(_src["contact_id"], _src["refined_source"])) if not _src.empty else {}
                 _nmap = dict(zip(_src["contact_id"], _src["notes"]))          if not _src.empty else {}
                 det = det.sort_values("act_date", ascending=False)

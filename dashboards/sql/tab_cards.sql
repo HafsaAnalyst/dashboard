@@ -2371,44 +2371,8 @@ LEFT JOIN fact_contacts c ON c.contact_id = a.contact_id;
 -- DuckDB doesn't support CTE reuse across views, so the body is duplicated.
 
 CREATE OR REPLACE VIEW vw_employee_activity AS
-WITH events_obs AS (   -- each stage transition: stage active starting at changed_at
-    SELECT contact_id, changed_at AS obs_ts,
-           CAST(changed_at + INTERVAL 10 HOUR AS DATE) AS obs_date,
-           new_stage AS stage
-    FROM fact_opp_stage_events
-    WHERE contact_id IS NOT NULL AND new_stage IS NOT NULL
-),
-first_evt AS (         -- initial stage = old_stage of each opp's earliest transition
-    SELECT opportunity_id,
-           arg_min(old_stage, changed_at) FILTER (WHERE old_stage IS NOT NULL) AS init_stage
-    FROM fact_opp_stage_events GROUP BY 1
-),
-init_obs AS (
-    SELECT o.contact_id, o.created_at AS obs_ts,
-           CAST(o.created_at + INTERVAL 10 HOUR AS DATE) AS obs_date,
-           f.init_stage AS stage
-    FROM first_evt f
-    JOIN fact_opportunities o ON o.opportunity_id = f.opportunity_id
-    WHERE f.init_stage IS NOT NULL AND o.contact_id IS NOT NULL AND o.created_at IS NOT NULL
-),
-noevt_obs AS (         -- opps with no recorded transitions: fall back to current stage
-    SELECT o.contact_id, o.created_at AS obs_ts,
-           CAST(o.created_at + INTERVAL 10 HOUR AS DATE) AS obs_date,
-           st.stage_name AS stage
-    FROM fact_opportunities o
-    LEFT JOIN dim_stages st ON st.stage_id = o.stage_id
-    WHERE o.contact_id IS NOT NULL AND o.created_at IS NOT NULL
-      AND o.opportunity_id NOT IN (SELECT opportunity_id FROM fact_opp_stage_events
-                                   WHERE opportunity_id IS NOT NULL)
-),
-obs AS (
-    SELECT * FROM events_obs
-    UNION ALL SELECT * FROM init_obs
-    UNION ALL SELECT * FROM noevt_obs
-),
-obs1 AS (              -- one stage per (contact, date): the latest observation that day
-    SELECT contact_id, obs_date, arg_max(stage, obs_ts) AS stage
-    FROM obs WHERE obs_date IS NOT NULL GROUP BY 1, 2
+WITH obs1 AS (   -- materialized point-in-time stage timeline (rebuilt each ETL run)
+    SELECT contact_id, obs_date, stage FROM fact_stage_observations
 ),
 contact_origin AS (    -- the lead's starting pipeline (earliest funnel opp)
     SELECT o.contact_id,
@@ -2481,39 +2445,8 @@ ORDER BY total_worked DESC;
 -- the stage on each activity date. Binds: $since, $until, $pipeline. App filters
 -- to the picked employee and adds Source/notes.
 CREATE OR REPLACE VIEW vw_employee_activity_detail AS
-WITH events_obs AS (
-    SELECT contact_id, changed_at AS obs_ts,
-           CAST(changed_at + INTERVAL 10 HOUR AS DATE) AS obs_date, new_stage AS stage
-    FROM fact_opp_stage_events
-    WHERE contact_id IS NOT NULL AND new_stage IS NOT NULL
-),
-first_evt AS (
-    SELECT opportunity_id,
-           arg_min(old_stage, changed_at) FILTER (WHERE old_stage IS NOT NULL) AS init_stage
-    FROM fact_opp_stage_events GROUP BY 1
-),
-init_obs AS (
-    SELECT o.contact_id, o.created_at AS obs_ts,
-           CAST(o.created_at + INTERVAL 10 HOUR AS DATE) AS obs_date, f.init_stage AS stage
-    FROM first_evt f
-    JOIN fact_opportunities o ON o.opportunity_id = f.opportunity_id
-    WHERE f.init_stage IS NOT NULL AND o.contact_id IS NOT NULL AND o.created_at IS NOT NULL
-),
-noevt_obs AS (
-    SELECT o.contact_id, o.created_at AS obs_ts,
-           CAST(o.created_at + INTERVAL 10 HOUR AS DATE) AS obs_date, st.stage_name AS stage
-    FROM fact_opportunities o
-    LEFT JOIN dim_stages st ON st.stage_id = o.stage_id
-    WHERE o.contact_id IS NOT NULL AND o.created_at IS NOT NULL
-      AND o.opportunity_id NOT IN (SELECT opportunity_id FROM fact_opp_stage_events
-                                   WHERE opportunity_id IS NOT NULL)
-),
-obs AS (
-    SELECT * FROM events_obs UNION ALL SELECT * FROM init_obs UNION ALL SELECT * FROM noevt_obs
-),
-obs1 AS (
-    SELECT contact_id, obs_date, arg_max(stage, obs_ts) AS stage
-    FROM obs WHERE obs_date IS NOT NULL GROUP BY 1, 2
+WITH obs1 AS (   -- materialized point-in-time stage timeline (rebuilt each ETL run)
+    SELECT contact_id, obs_date, stage FROM fact_stage_observations
 ),
 contact_origin AS (
     SELECT o.contact_id, arg_min(p.pipeline_name, o.created_at) AS origin_pipeline

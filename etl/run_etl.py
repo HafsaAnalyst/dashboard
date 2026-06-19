@@ -99,6 +99,63 @@ def upsert_df(con, table: str, df: pd.DataFrame, key_col: str) -> int:
     return len(df2)
 
 
+def rebuild_stage_observations(con) -> dict:
+    """Rebuild fact_stage_observations: the point-in-time stage timeline, 1 row per
+    (contact_id, AEST date) = the stage that contact was in that day (latest
+    observation across all its opps). Derived from fact_opp_stage_events (stage
+    transitions) + fact_opportunities (initial / no-event fallback). Computed
+    server-side on MotherDuck so the Follower Performance views just ASOF-join it
+    instead of rebuilding the timeline on every query."""
+    logger.info("== STAGE OBSERVATIONS ==")
+    try:
+        con.execute("""
+            CREATE OR REPLACE TABLE fact_stage_observations AS
+            WITH events_obs AS (
+                SELECT contact_id, changed_at AS obs_ts,
+                       CAST(changed_at + INTERVAL 10 HOUR AS DATE) AS obs_date,
+                       new_stage AS stage
+                FROM fact_opp_stage_events
+                WHERE contact_id IS NOT NULL AND new_stage IS NOT NULL
+            ),
+            first_evt AS (
+                SELECT opportunity_id,
+                       arg_min(old_stage, changed_at) FILTER (WHERE old_stage IS NOT NULL) AS init_stage
+                FROM fact_opp_stage_events GROUP BY 1
+            ),
+            init_obs AS (
+                SELECT o.contact_id, o.created_at AS obs_ts,
+                       CAST(o.created_at + INTERVAL 10 HOUR AS DATE) AS obs_date,
+                       f.init_stage AS stage
+                FROM first_evt f
+                JOIN fact_opportunities o ON o.opportunity_id = f.opportunity_id
+                WHERE f.init_stage IS NOT NULL AND o.contact_id IS NOT NULL AND o.created_at IS NOT NULL
+            ),
+            noevt_obs AS (
+                SELECT o.contact_id, o.created_at AS obs_ts,
+                       CAST(o.created_at + INTERVAL 10 HOUR AS DATE) AS obs_date,
+                       st.stage_name AS stage
+                FROM fact_opportunities o
+                LEFT JOIN dim_stages st ON st.stage_id = o.stage_id
+                WHERE o.contact_id IS NOT NULL AND o.created_at IS NOT NULL
+                  AND o.opportunity_id NOT IN (SELECT opportunity_id FROM fact_opp_stage_events
+                                               WHERE opportunity_id IS NOT NULL)
+            ),
+            obs AS (
+                SELECT * FROM events_obs
+                UNION ALL SELECT * FROM init_obs
+                UNION ALL SELECT * FROM noevt_obs
+            )
+            SELECT contact_id, obs_date, arg_max(stage, obs_ts) AS stage
+            FROM obs WHERE obs_date IS NOT NULL GROUP BY 1, 2
+        """)
+        n = con.execute("SELECT COUNT(*) FROM fact_stage_observations").fetchone()[0]
+        logger.info("  fact_stage_observations: %d rows", n)
+        return {"fact_stage_observations": n}
+    except Exception as e:
+        logger.exception("rebuild_stage_observations failed: %s", e)
+        return {}
+
+
 # ---------------------------------------------------------------------
 # Extract steps
 # ---------------------------------------------------------------------
@@ -633,6 +690,7 @@ def run_etl(full_refresh: bool = False) -> None:
     try:
         summary = {}
         summary.update(extract_ghl(con, since, until))
+        summary.update(rebuild_stage_observations(con))
         summary.update(extract_meta(con, since, until))
         summary.update(extract_ga4(con, since, until))
         summary.update(extract_gsc(con, since, until))
@@ -677,6 +735,7 @@ def main() -> None:
         try:
             summary = {}
             summary.update(extract_ghl(con, since, until))
+            summary.update(rebuild_stage_observations(con))
             summary.update(extract_meta(con, since, until))
             summary.update(extract_ga4(con, since, until))
             summary.update(extract_gsc(con, since, until))
