@@ -2621,3 +2621,61 @@ SELECT
     -- COE only among the leads that SHOWED for their appointment
     (SELECT COUNT(*) FROM coe
        WHERE contact_id IN (SELECT contact_id FROM appt WHERE showed = 1)) AS coe;
+
+
+-- Funnels_1 table view: one row per lead in the funnel cohort, with its current
+-- opportunity state. Binds $since/$until. App adds Source + Lead Created Date
+-- (mapped from vw_exec1_lead_detail) for the refined-source label.
+CREATE OR REPLACE VIEW vw_funnel1_detail AS
+WITH revived AS (
+    SELECT contact_id FROM (
+        SELECT contact_id, MAX(submitted_at) AS ms FROM (
+            SELECT contact_id, submitted_at FROM fact_form_submissions   WHERE contact_id IS NOT NULL
+            UNION ALL
+            SELECT contact_id, submitted_at FROM fact_survey_submissions WHERE contact_id IS NOT NULL
+        ) GROUP BY 1
+    ) WHERE CAST(ms + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
+),
+cohort AS (
+    SELECT DISTINCT o.contact_id
+    FROM fact_opportunities o
+    JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id
+         AND p.pipeline_name IN ('L2C - Education', 'L2C - Skill Migration')
+    WHERE o.contact_id IS NOT NULL
+      AND (CAST(o.created_at + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
+           OR o.contact_id IN (SELECT contact_id FROM revived))
+),
+latest_opp AS (   -- where the lead is NOW (most recently updated opp, any pipeline)
+    SELECT contact_id, pipeline_name, stage_name, status, last_stage_change_at FROM (
+        SELECT o.contact_id, p.pipeline_name, s.stage_name, o.status, o.last_stage_change_at,
+               ROW_NUMBER() OVER (PARTITION BY o.contact_id ORDER BY o.updated_at DESC) AS rn
+        FROM fact_opportunities o
+        JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id
+        JOIN dim_stages   s ON s.stage_id = o.stage_id
+        WHERE o.contact_id IN (SELECT contact_id FROM cohort)
+    ) WHERE rn = 1
+),
+last_appt AS (
+    SELECT contact_id, calendar_id FROM (
+        SELECT contact_id, calendar_id,
+               ROW_NUMBER() OVER (PARTITION BY contact_id ORDER BY start_time DESC NULLS LAST) AS rn
+        FROM fact_appointments
+        WHERE contact_id IN (SELECT contact_id FROM cohort)
+          AND LOWER(COALESCE(appointment_status,'')) <> 'invalid'
+    ) WHERE rn = 1
+)
+SELECT
+    co.contact_id,
+    c.email,
+    c.contact_name,
+    c.phone,
+    lo.pipeline_name AS pipeline,
+    lo.stage_name    AS stage,
+    lo.status,
+    CAST(lo.last_stage_change_at + INTERVAL 10 HOUR AS DATE) AS stage_last_updated,
+    dc.calendar_name
+FROM cohort co
+JOIN fact_contacts c ON c.contact_id = co.contact_id
+LEFT JOIN latest_opp lo ON lo.contact_id = co.contact_id
+LEFT JOIN last_appt  la ON la.contact_id = co.contact_id
+LEFT JOIN dim_calendars dc ON dc.calendar_id = la.calendar_id;

@@ -5347,19 +5347,26 @@ with tab_e1:
                     "#15803d" if up else "#dc2626")
 
         # ---- master by-source summary (drives the per-card summary tables) ----
-        # Walk-in / Agentcis / Unknown plus the channel-named sources (Direct call, SMS,
-        # Web Chat, Email) are grouped under one "Others" umbrella in the by-source
-        # tables; the granular value stays on e1 for the drill-down.
-        OTHERS_SUB = ["Walk-in", "Agentcis", "Unknown", "Direct call", "SMS", "Web Chat", "Email"]
-        e1["src_group"] = e1["refined_source"].where(
-            ~e1["refined_source"].isin(OTHERS_SUB), "Others")
+        # Only these five buckets show as their own row (renamed for display);
+        # every other source (Returning Client, Direct, Direct Bookings, Agentcis,
+        # Unknown, Direct call, SMS, Web Chat, Email, Other/Unknown, ...) folds into
+        # "Others". Queries keep their own row (separate scorecard). The granular
+        # refined_source stays on e1 for the Others / Social drill-downs.
+        SRC_RENAME = {"Paid Social": "Paid Leads", "Organic Search": "Website Leads",
+                      "Social media": "Social Media", "Referral": "Referrals",
+                      "Walk-in": "Walk-in"}
+
+        def _src_group(s):
+            if s == "Queries":
+                return "Queries"
+            return SRC_RENAME.get(s, "Others")
+        e1["src_group"] = e1["refined_source"].map(_src_group)
         src = (e1.groupby("src_group")
                .agg(Leads=("contact_id", "count"), Opportunities=("n_opps", "sum"),
                     Booked=("appt_booked", "sum"), Showed=("appt_showed", "sum"))
                .reset_index().rename(columns={"src_group": "Source"}))
         if not conv_df.empty:
-            _grp = conv_df["source"].apply(
-                lambda s: "Others" if s in OTHERS_SUB + ["Other / Unknown"] else s)
+            _grp = conv_df["source"].map(lambda s: SRC_RENAME.get(s, "Others"))
             _cc = _grp.value_counts().rename_axis("Source").reset_index(name="Conversions")
             src = src.merge(_cc, on="Source", how="left")
         else:
@@ -5377,8 +5384,7 @@ with tab_e1:
         pr_br, pr_sr = {}, {}
         if not e1p.empty:
             _e1p = e1p[e1p["refined_source"] != "No Activity"].copy()
-            _e1p["src_group"] = _e1p["refined_source"].where(
-                ~_e1p["refined_source"].isin(OTHERS_SUB), "Others")
+            _e1p["src_group"] = _e1p["refined_source"].map(_src_group)
             _sp = (_e1p.groupby("src_group")
                    .agg(Leads=("contact_id", "count"), Booked=("appt_booked", "sum"),
                         Showed=("appt_showed", "sum")).reset_index())
@@ -5587,14 +5593,15 @@ with tab_e1:
                                "Widen the date filter for a longer history.")
 
                 if picked == "Others":
-                    st.markdown("**Others — breakdown** (Walk-in · Agentcis · Direct call · "
-                                "SMS · Web Chat · Email · Unknown — click a row)")
+                    st.markdown("**Others — breakdown** (Returning Client · Direct · "
+                                "Direct Bookings · Agentcis · Unknown · Direct call · SMS · "
+                                "Web Chat · Email — click a row)")
+                    _opr = (e1p[~e1p["refined_source"].isin(list(SRC_RENAME) + ["Queries", "No Activity"])]
+                            if not e1p.empty else None)
                     base, ttl = _nested(e1[e1["src_group"] == "Others"], "refined_source",
-                                        "Sub-source", "e1_others_sel",
-                                        prior_df=(e1p[e1p["refined_source"].isin(OTHERS_SUB)]
-                                                  if not e1p.empty else None))
-                elif picked == "Social media":
-                    st.markdown("**Social media — by platform** (Instagram · LinkedIn · TikTok · "
+                                        "Sub-source", "e1_others_sel", prior_df=_opr)
+                elif picked == "Social Media":
+                    st.markdown("**Social Media — by platform** (Instagram · LinkedIn · TikTok · "
                                 "WhatsApp · Facebook — click a row)")
                     base, ttl = _nested(e1[e1["refined_source"] == "Social media"],
                                         "social_platform", "Platform", "e1_social_sel",
@@ -5775,7 +5782,7 @@ with tab_e1:
         # (every other source).
         n_meta_leads = int((leads_df["refined_source"] == "Paid Social").sum())
         n_organic_leads = n_leads - n_meta_leads
-        sub = f"{n_meta_leads:,} Paid Social · {n_organic_leads:,} Organic"
+        sub = f"{n_meta_leads:,} Paid Leads · {n_organic_leads:,} Website / other"
         kc = st.columns(5)
         _e1_scorecard(kc[0], "Leads", f"{n_leads:,}", sub,
                       _delta_md(n_leads, p_leads, higher_is_better=True, fmt="pct"))
@@ -6430,12 +6437,49 @@ with tab_funnels1:
     # ===== Lead progression funnel =====
     import altair as _alt
     st.markdown("---")
-    st.markdown("### 🔻 Lead funnel — Leads → Pre Sales → Booked → Showed → COE")
+    _fhdr, _ftog = st.columns([5, 1])
+    with _fhdr:
+        st.markdown("### 🔻 Lead funnel — Leads → Pre Sales → Booked → Showed → COE")
+    with _ftog:
+        _funnel_view = st.segmented_control(
+            "View", ["📊", "📋"], default="📊", key="funnel1_view",
+            label_visibility="collapsed",
+            help="📊 funnel chart · 📋 table of the leads behind it") or "📊"
     _fn = run_df("vw_funnel1", {"since": since.isoformat(), "until": until.isoformat()})
     _leads0 = int(_fn["leads"].iloc[0]) if not _fn.empty else 0
     if _fn.empty or _leads0 == 0:
         st.caption("No leads (New Lead / Assigned-to-Nurturer in L2C-Education / "
                    "L2C-Skill-Migration) created or revived in this window.")
+    elif _funnel_view == "📋":
+        # ---- Table view: every lead in the funnel cohort + its current state ----
+        _fd = run_df("vw_funnel1_detail", {"since": since.isoformat(), "until": until.isoformat()})
+        _src = run_df("vw_exec1_lead_detail",
+                      {"since": since.isoformat(), "until": until.isoformat(), "city": "All"})
+        _smap = dict(zip(_src["contact_id"], _src["refined_source"])) if not _src.empty else {}
+        _ldmap = dict(zip(_src["contact_id"], _src["lead_date"]))      if not _src.empty else {}
+        if _fd.empty:
+            st.caption("No leads in this window.")
+        else:
+            _ft = pd.DataFrame({
+                "Email":             _fd["email"].fillna("(no email)").values,
+                "Source":            _fd["contact_id"].map(_smap).fillna("—").replace("", "—").values,
+                "Calendar Name":     _fd["calendar_name"].fillna("—").replace("", "—").values,
+                "Pipeline":          _fd["pipeline"].fillna("—").values,
+                "Stage":             _fd["stage"].fillna("—").values,
+                "Lead Created Date": pd.to_datetime(
+                    _fd["contact_id"].map(_ldmap), errors="coerce").dt.strftime("%Y-%m-%d").fillna("—"),
+                "Stage Last Updated": pd.to_datetime(_fd["stage_last_updated"]).dt.strftime("%Y-%m-%d"),
+                "Name":              _fd["contact_name"].fillna("—").replace("", "—").values,
+                "Phone":             _fd["phone"].fillna("—").replace("", "—").values,
+                "Status":            _fd["status"].fillna("—").values,
+            }).sort_values("Lead Created Date", ascending=False)
+            st.dataframe(_ft, hide_index=True, use_container_width=True, height=460)
+            st.download_button("Download (CSV)", _ft.to_csv(index=False).encode("utf-8"),
+                               file_name=f"funnel_leads_{since.isoformat()}_{until.isoformat()}.csv",
+                               mime="text/csv", key="funnel1_dl")
+            st.caption(f"{len(_ft):,} leads in the funnel cohort. **Stage Last Updated** = when the lead "
+                       "last entered its current stage. **Source** = same refined-source logic as the "
+                       "Executive tab.")
     else:
         r0 = _fn.iloc[0]
         _stages = ["Leads", "Pre Sales / Follow-up (open)", "Booked", "Showed", "COE Received"]
