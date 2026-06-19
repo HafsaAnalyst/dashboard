@@ -2106,6 +2106,16 @@ conv AS (
          AND (s.stage_name IN ('Application Submitted', 'Acknowledgment Sent + Doc')
               OR LOWER(o.status) = 'won'))
       )
+),
+last_appt AS (   -- the conversion contact's most recent appointment calendar
+    SELECT contact_id, calendar_id FROM (
+        SELECT contact_id, calendar_id,
+               ROW_NUMBER() OVER (PARTITION BY contact_id
+                   ORDER BY start_time DESC NULLS LAST) AS rn
+        FROM fact_appointments
+        WHERE contact_id IS NOT NULL
+          AND LOWER(COALESCE(appointment_status,'')) <> 'invalid'
+    ) WHERE rn = 1
 )
 SELECT cv.contact_id, c.email,
     CASE
@@ -2133,7 +2143,7 @@ SELECT cv.contact_id, c.email,
         ELSE 'Other / Unknown'
     END                                                                    AS source,
     cv.pipeline_name AS pipeline, cv.stage_name AS stage, cv.status, cv.changed_date,
-    cv.conv_type,
+    cv.conv_type, dc.calendar_name AS calendar_name,
     -- detailed source: campaign → utm_campaign → form/survey name → social channel
     COALESCE(
         NULLIF(ls.campaign, ''),
@@ -2147,6 +2157,8 @@ FROM conv cv
 JOIN fact_contacts c ON c.contact_id = cv.contact_id
 LEFT JOIN ls   ON ls.contact_id = cv.contact_id
 LEFT JOIN chan cc ON cc.contact_id = cv.contact_id
+LEFT JOIN last_appt la ON la.contact_id = cv.contact_id
+LEFT JOIN dim_calendars dc ON dc.calendar_id = la.calendar_id
 WHERE cv.rn = 1;
 
 

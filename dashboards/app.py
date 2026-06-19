@@ -5680,6 +5680,7 @@ with tab_e1:
                         "Pipeline": _cdf["pipeline"],
                         "Stage": _cdf["stage"],
                         "Status": _cdf["status"],
+                        "Calendar Name": _cdf["calendar_name"].fillna("—").replace("", "—"),
                         "Last State-Change Date": pd.to_datetime(_cdf["changed_date"]).dt.strftime("%Y-%m-%d"),
                     }).sort_values("Last State-Change Date", ascending=False)
                     st.markdown(f"**Conversion contacts · {len(cv):,}**")
