@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -204,15 +205,26 @@ _DB_TRANSIENT = ("deadline_exceeded", "unavailable", "timed out", "timeout",
                  "rpc", "503", "try again later")
 
 
+_DB_LOCK = threading.Lock()
+
+
 def db_exec(sql: str, params=None, retries: int = 4):
-    """db_exec(...) with retry on transient MotherDuck errors. Returns
-    the executed relation (callers keep their .fetchall()/.fetchdf())."""
+    """Execute a query with retry on transient MotherDuck errors. Returns the
+    executed relation (callers keep their .fetchall()/.fetchdf()).
+
+    Runs each query on its OWN cursor (get_con().cursor()) rather than the shared
+    cached connection directly. The connection is shared across every Streamlit
+    session/rerun (@st.cache_resource), and a DuckDB connection is NOT safe for
+    concurrent queries — two devices hitting it at once corrupt each other's
+    result cursor (→ fetchone() returns None → TypeError). A per-query cursor
+    isolates them; the lock only guards cheap cursor creation."""
     import time as _time
     last = None
     for i in range(retries):
         try:
-            con = get_con()
-            return con.execute(sql, params) if params is not None else con.execute(sql)
+            with _DB_LOCK:
+                cur = get_con().cursor()
+            return cur.execute(sql, params) if params is not None else cur.execute(sql)
         except Exception as e:
             last = e
             if i == retries - 1 or not any(t in str(e).lower() for t in _DB_TRANSIENT):
@@ -6089,14 +6101,15 @@ with tab_funnels1:
     _ps, _pu = prior_since.isoformat(), prior_until.isoformat()
 
     def _f1_contacts(s, u):
-        return _con.execute(
+        row = db_exec(
             "SELECT COUNT(*) FROM fact_contacts "
             "WHERE CAST(date_added + INTERVAL 10 HOUR AS DATE) BETWEEN ? AND ? "
             "AND LOWER(TRIM(COALESCE(contact_name,''))) NOT IN ('insta user','insta ai')",
-            [s, u]).fetchone()[0]
+            [s, u]).fetchone()
+        return row[0] if row else 0
 
     def _f1_opps(s, u):
-        d = _con.execute(
+        d = db_exec(
             "SELECT LOWER(COALESCE(status,'open')) st, COUNT(*) n FROM fact_opportunities "
             "WHERE CAST(created_at + INTERVAL 10 HOUR AS DATE) BETWEEN ? AND ? GROUP BY 1",
             [s, u]).fetchdf()
@@ -6116,7 +6129,7 @@ with tab_funnels1:
     import stripe_revenue as _srev
     _paid_cals = [cid for c in COUNSELLORS if c.get("is_paid") for cid in c["calendar_ids"]]
     _phh = ",".join(["?"] * len(_paid_cals))
-    _booked = set(_con.execute(
+    _booked = set(db_exec(
         f"SELECT DISTINCT contact_id FROM fact_appointments WHERE calendar_id IN ({_phh}) "
         "AND LOWER(COALESCE(appointment_status,'')) <> 'invalid' AND contact_id IS NOT NULL",
         _paid_cals).fetchdf()["contact_id"])
@@ -6146,11 +6159,11 @@ with tab_funnels1:
 
     # ---- cohort opportunities (created + revived) — drives the funnel and the
     #      Booking-Link-Shared / Post-Consultation cards ----
-    _so = _con.execute(
+    _so = db_exec(
         "SELECT p.pipeline_name pn, s.stage_name sn, s.stage_order so "
         "FROM dim_stages s JOIN dim_pipelines p ON p.pipeline_id = s.pipeline_id").fetchdf()
     _ordm = {(r.pn, r.sn): r.so for r in _so.itertuples()}
-    fopps = _con.execute(
+    fopps = db_exec(
         "WITH subs AS ("
         "  SELECT contact_id, MAX(submitted_at) ms FROM ("
         "    SELECT contact_id, submitted_at FROM fact_form_submissions WHERE contact_id IS NOT NULL"
@@ -6303,7 +6316,7 @@ with tab_funnels1:
         for _r in _e1f.itertuples():
             if getattr(_r, "appt_booked", 0) == 1 and pd.notna(getattr(_r, "calendar_name", None)):
                 _calmap[_r.contact_id] = _r.calendar_name
-    _oc = _con.execute(
+    _oc = db_exec(
         "SELECT o.contact_id, c.email, c.contact_name, c.phone, "
         "CAST(c.date_added + INTERVAL 10 HOUR AS DATE) cdate, "
         "p.pipeline_name pn, s.stage_name sn, COALESCE(o.status,'open') status "
@@ -6334,14 +6347,14 @@ with tab_funnels1:
     pc_det = pd.DataFrame(columns=["Email", "Name", "Counsellor", "Amount", "Stripe Payment Date",
                                    "Appt Created Date", "Appt Scheduled Date", "Phone", "Country"])
     if not paid_df.empty:
-        _ai = _con.execute(
+        _ai = db_exec(
             f"SELECT contact_id, MIN(CAST(date_added + INTERVAL 10 HOUR AS DATE)) ac, "
             f"MIN(CAST(start_time AS DATE)) asch FROM fact_appointments "
             f"WHERE calendar_id IN ({_phh}) AND contact_id IS NOT NULL "
             "AND LOWER(COALESCE(appointment_status,'')) <> 'invalid' GROUP BY 1", _paid_cals).fetchdf()
         _acm = dict(zip(_ai["contact_id"], _ai["ac"])); _asm = dict(zip(_ai["contact_id"], _ai["asch"]))
         _ids2 = paid_df["contact_id"].dropna().tolist()
-        _em2 = (_con.execute(
+        _em2 = (db_exec(
             f"SELECT contact_id, email, contact_name, phone FROM fact_contacts "
             f"WHERE contact_id IN ({','.join(['?']*len(_ids2))})", _ids2).fetchdf()
             if _ids2 else pd.DataFrame(columns=["contact_id", "email", "contact_name", "phone"]))
@@ -6459,7 +6472,7 @@ with tab_funnels1:
     _PIPES = ["L2C - Education", "L2C - VISA", "CLT - Onshore Admission",
               "CLT - Admissions Sub-Applications", "CLT - VISA"]
     _phq = ",".join(["?"] * len(_PIPES))
-    _dd = _con.execute(
+    _dd = db_exec(
         "SELECT p.pipeline_name pn, s.stage_name sn, s.stage_order so, "
         "AVG(date_diff('day', CAST(o.updated_at + INTERVAL 10 HOUR AS DATE), CURRENT_DATE)) avg_days, "
         "COUNT(*) n FROM fact_opportunities o "
