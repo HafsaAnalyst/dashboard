@@ -2086,26 +2086,46 @@ conv AS (
     -- COE = reached COE/Initial Received or Won in L2C-Education / CLT-Onshore;
     -- POC = reached Application Submitted / Acknowledgment Sent + Doc or Won in
     -- CLT - VISA. One row per contact PER TYPE (a contact can be both).
-    SELECT o.contact_id, p.pipeline_name, s.stage_name, o.status,
-           CAST(o.updated_at AS DATE) AS changed_date,
-           CASE WHEN p.pipeline_name = 'CLT - VISA' THEN 'POC' ELSE 'COE' END AS conv_type,
-           ROW_NUMBER() OVER (
-               PARTITION BY o.contact_id,
-                   CASE WHEN p.pipeline_name = 'CLT - VISA' THEN 'POC' ELSE 'COE' END
-               ORDER BY o.updated_at DESC) AS rn
-    FROM fact_opportunities o
-    JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id
-         AND p.pipeline_name IN ('L2C - Education', 'CLT - Onshore Admission', 'CLT - VISA')
-    JOIN dim_stages   s ON s.stage_id = o.stage_id
-    WHERE CAST(o.updated_at AS DATE) BETWEEN $since AND $until
-      AND (
-        (p.pipeline_name IN ('L2C - Education', 'CLT - Onshore Admission')
-         AND (s.stage_name IN ('COE Received', 'Initial Received') OR LOWER(o.status) = 'won'))
-        OR
-        (p.pipeline_name = 'CLT - VISA'
-         AND (s.stage_name IN ('Application Submitted', 'Acknowledgment Sent + Doc')
-              OR LOWER(o.status) = 'won'))
-      )
+    --
+    -- Dated by WHEN the opp ENTERED its conversion state (stage change into the
+    -- conversion stage, or status change to Won) — NOT updated_at. updated_at is
+    -- bumped by ANY later edit (e.g. booking an appointment after COE), which
+    -- mis-dated the COE into a later month and inflated the count (a COE reached
+    -- in March but touched in June was counted as a June COE).
+    SELECT contact_id, pipeline_name, stage_name, status, conv_type, changed_date
+    FROM (
+        SELECT contact_id, pipeline_name, stage_name, status, conv_type, changed_date,
+               ROW_NUMBER() OVER (PARTITION BY contact_id, conv_type
+                                  ORDER BY changed_date DESC) AS rn
+        FROM (
+            SELECT o.contact_id, p.pipeline_name, s.stage_name, o.status,
+                   CASE WHEN p.pipeline_name = 'CLT - VISA' THEN 'POC' ELSE 'COE' END AS conv_type,
+                   CAST(
+                       CASE
+                           WHEN s.stage_name IN ('COE Received', 'Initial Received',
+                                    'Application Submitted', 'Acknowledgment Sent + Doc')
+                                AND o.last_stage_change_at IS NOT NULL
+                               THEN o.last_stage_change_at
+                           WHEN LOWER(o.status) = 'won' AND o.last_status_change_at IS NOT NULL
+                               THEN o.last_status_change_at
+                           ELSE o.updated_at
+                       END + INTERVAL 10 HOUR AS DATE)                          AS changed_date
+            FROM fact_opportunities o
+            JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id
+                 AND p.pipeline_name IN ('L2C - Education', 'CLT - Onshore Admission', 'CLT - VISA')
+            JOIN dim_stages   s ON s.stage_id = o.stage_id
+            WHERE (
+                (p.pipeline_name IN ('L2C - Education', 'CLT - Onshore Admission')
+                 AND (s.stage_name IN ('COE Received', 'Initial Received') OR LOWER(o.status) = 'won'))
+                OR
+                (p.pipeline_name = 'CLT - VISA'
+                 AND (s.stage_name IN ('Application Submitted', 'Acknowledgment Sent + Doc')
+                      OR LOWER(o.status) = 'won'))
+              )
+        ) q
+        WHERE changed_date BETWEEN $since AND $until
+    ) r
+    WHERE rn = 1
 ),
 last_appt AS (   -- the conversion contact's most recent appointment calendar
     SELECT contact_id, calendar_id FROM (
@@ -2158,8 +2178,7 @@ JOIN fact_contacts c ON c.contact_id = cv.contact_id
 LEFT JOIN ls   ON ls.contact_id = cv.contact_id
 LEFT JOIN chan cc ON cc.contact_id = cv.contact_id
 LEFT JOIN last_appt la ON la.contact_id = cv.contact_id
-LEFT JOIN dim_calendars dc ON dc.calendar_id = la.calendar_id
-WHERE cv.rn = 1;
+LEFT JOIN dim_calendars dc ON dc.calendar_id = la.calendar_id;
 
 
 -- =====================================================================
