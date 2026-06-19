@@ -6438,8 +6438,8 @@ with tab_funnels1:
                    "L2C-Skill-Migration) created or revived in this window.")
     else:
         r0 = _fn.iloc[0]
-        _stages = ["Leads", "Pre Sales / Follow-up", "Open", "Booked", "Showed", "COE Received"]
-        _ncnt = [int(r0["leads"]), int(r0["presales"]), int(r0["open_opps"]),
+        _stages = ["Leads", "Pre Sales / Follow-up (open)", "Booked", "Showed", "COE Received"]
+        _ncnt = [int(r0["leads"]), int(r0["presales_open"]),
                  int(r0["booked"]), int(r0["showed"]), int(r0["coe"])]
         _fun = pd.DataFrame({"Stage": _stages, "Count": _ncnt})
         _fun["Pct"] = _fun["Count"] / (_leads0 if _leads0 else 1)
@@ -6461,11 +6461,11 @@ with tab_funnels1:
         st.caption(
             "Distinct **leads** that entered at *New Lead / Assigned to Nurturer* in **L2C-Education** "
             "or **L2C-Skill-Migration** (created or revived in range), and how many **ever reached** each "
-            "milestone. **Pre Sales / Follow-up** = reached Pre Sales (1)/(2) or Follow up 1/2 · "
-            "**Open** = lead still has an open opportunity · **Booked** = has an appointment **created in "
+            "milestone. **Pre Sales / Follow-up (open)** = reached Pre Sales (1)/(2) or Follow up 1/2 "
+            "**and** the lead still has an open opportunity · **Booked** = has an appointment **created in "
             "the range** (any pipeline) · **Showed** = that appointment was attended · **COE Received** = "
-            "reached COE / Initial Received or Won in L2C-Education / CLT-Onshore (same logic as "
-            "Conversions). %s are of Leads." % "Percentages")
+            "of the **Showed** leads, those that reached COE / Initial Received or Won in L2C-Education / "
+            "CLT-Onshore (same logic as Conversions). Percentages are of Leads.")
 
     # ===== Avg days in stage — by pipeline =====
     st.markdown("### ⏳ Avg days in stage — by pipeline")

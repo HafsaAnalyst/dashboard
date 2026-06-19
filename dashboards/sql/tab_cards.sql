@@ -2613,8 +2613,11 @@ coe AS (
 )
 SELECT
     (SELECT COUNT(*) FROM cohort)                AS leads,
-    (SELECT COUNT(*) FROM presales)              AS presales,
-    (SELECT COUNT(*) FROM open_opp)              AS open_opps,
-    (SELECT COUNT(*) FROM appt WHERE booked = 1) AS booked,
-    (SELECT COUNT(*) FROM appt WHERE showed = 1) AS showed,
-    (SELECT COUNT(*) FROM coe)                   AS coe;
+    -- Pre Sales / Follow-up, restricted to leads still OPEN (open folded in)
+    (SELECT COUNT(*) FROM presales
+       WHERE contact_id IN (SELECT contact_id FROM open_opp))           AS presales_open,
+    (SELECT COUNT(*) FROM appt WHERE booked = 1)                        AS booked,
+    (SELECT COUNT(*) FROM appt WHERE showed = 1)                        AS showed,
+    -- COE only among the leads that SHOWED for their appointment
+    (SELECT COUNT(*) FROM coe
+       WHERE contact_id IN (SELECT contact_id FROM appt WHERE showed = 1)) AS coe;
