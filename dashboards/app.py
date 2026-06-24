@@ -5612,27 +5612,46 @@ with tab_e1:
                     st.caption("No bookings in the selected range to chart.")
                 else:
                     import altair as alt
-                    _ch = (alt.Chart(_long).mark_line(point=True).encode(
-                        x=alt.X("period:T", title=None,
-                                axis=alt.Axis(format=("%b %d" if gran != "Month" else "%b %y"))),
-                        y=alt.Y("Count:Q", title=None),
-                        color=alt.Color("Metric:N",
-                                        scale=alt.Scale(domain=["Booked", "Showed"],
-                                                        range=["#4DA6FF", "#7A52CC"]),
-                                        legend=alt.Legend(title=None, orient="top")),
-                        strokeDash=alt.StrokeDash(
-                            "Period:N", sort=["Current", "Previous"],
-                            scale=alt.Scale(domain=["Current", "Previous"], range=[[1, 0], [4, 4]]),
-                            legend=alt.Legend(title=None, orient="top")),
-                        tooltip=[alt.Tooltip("period:T", title="Period"),
-                                 "Metric:N", "Count:Q", "Period:N"])
-                        .properties(height=210))
+                    # 4 distinct series: current = bold colours, previous = light.
+                    _long["series"] = _long["Metric"] + " " + _long["Period"].str.lower()
+                    _order = ["Booked current", "Showed current",
+                              "Booked previous", "Showed previous"]
+                    _crange = {"Booked current": "#1E88E5", "Showed current": "#6A3FC0",
+                               "Booked previous": "#A9D4FF", "Showed previous": "#D2C4F2"}
+                    _present = [s for s in _order if s in set(_long["series"])]
+                    _xfmt = "%b %d" if gran != "Month" else "%b %y"
+                    _baseX = alt.X("period:T", title=None, axis=alt.Axis(format=_xfmt))
+                    # nearest-point selection on the x value → unified hover tooltip
+                    _near = alt.selection_point(nearest=True, on="mouseover",
+                                                fields=["period"], empty=False)
+                    _lines = alt.Chart(_long).mark_line(point=True).encode(
+                        x=_baseX, y=alt.Y("Count:Q", title=None),
+                        color=alt.Color("series:N", sort=_present,
+                                        scale=alt.Scale(domain=_present,
+                                                        range=[_crange[s] for s in _present]),
+                                        legend=alt.Legend(title=None, orient="top", columns=2)))
+                    # transparent selectors across the x-domain that own the selection
+                    _selx = alt.Chart(_long).mark_point().encode(
+                        x=_baseX, opacity=alt.value(0)).add_params(_near)
+                    # emphasise every series' point at the hovered x
+                    _pts = _lines.mark_point(size=65, filled=True).encode(
+                        opacity=alt.condition(_near, alt.value(1), alt.value(0)))
+                    # vertical rule + ONE tooltip listing all series at the hovered x
+                    _rule = (alt.Chart(_long)
+                             .transform_pivot("series", value="Count", groupby=["period"])
+                             .mark_rule(color="#9aa0a6").encode(
+                                 x=_baseX,
+                                 opacity=alt.condition(_near, alt.value(0.4), alt.value(0)),
+                                 tooltip=([alt.Tooltip("period:T", title="Date", format=_xfmt)]
+                                          + [alt.Tooltip(f"{s}:Q", title=s.title()) for s in _present])))
+                    _ch = alt.layer(_lines, _selx, _pts, _rule).properties(height=230)
                     st.altair_chart(_ch, use_container_width=True)
                     st.caption(
                         f"Booked vs Showed by {gran.lower()} over the **selected range** "
-                        f"({since.strftime('%b %d')} → {until.strftime('%b %d, %Y')}, solid) vs the "
+                        f"({since.strftime('%b %d')} → {until.strftime('%b %d, %Y')}, bold) vs the "
                         f"**previous period** ({prior_since.strftime('%b %d')} → "
-                        f"{prior_until.strftime('%b %d, %Y')}, dashed) — aligned day-by-day.")
+                        f"{prior_until.strftime('%b %d, %Y')}, light) — aligned day-by-day. "
+                        "Hover any point to see all four values for that day.")
 
                 if picked == "Others":
                     st.markdown("**Others — breakdown** (Returning Client · Direct Bookings · "
