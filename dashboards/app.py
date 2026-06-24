@@ -5741,48 +5741,57 @@ with tab_e1:
                 st.dataframe(tbl, hide_index=True, use_container_width=True, height=420)
                 _dl(tbl, "Download (CSV)", "queries")
 
-                # ---- By platform: Queries vs Booked (chart left · stats right) ----
-                # Counts ACROSS every lead that came via each conversation channel —
-                # not just strict Queries — because a DM query that books is
-                # re-classified out of 'Queries' (queries require no appointment), so
-                # the booked WhatsApp/TikTok/etc. conversions live under other sources.
+                # ---- By platform: channel inquiries split Booked / Not-booked (STACKED) ----
+                # Cohort = every contact that came via a conversation channel. A DM query
+                # that books is re-classified out of 'Queries' (queries require no appt),
+                # so we measure the CHANNEL itself. Booked = booked an appointment CREATED
+                # on/after the lead (query) date → always a SUBSET of that channel's
+                # inquiries (so Booked can never exceed the bar total).
                 st.markdown("---")
-                st.markdown("**By platform — queries vs booked** "
+                st.markdown("**By platform — inquiries split by booked** "
                             "(conversation channel: SMS · Call · WhatsApp · TikTok · Instagram · …)")
                 _chan = e1[e1["query_channel"].notna()
-                           & (e1["query_channel"].astype(str).str.strip() != "")]
+                           & (e1["query_channel"].astype(str).str.strip() != "")].copy()
                 qg = (_chan.groupby("query_channel")
-                      .agg(Queries=("refined_source", lambda s: int((s == "Queries").sum())),
+                      .agg(Inquiries=("contact_id", "count"),
                            Booked=("appt_booked", lambda s: int(s.sum())))
                       .reset_index().rename(columns={"query_channel": "Platform"}))
-                qg = qg.sort_values("Queries", ascending=False)
+                qg["Not booked"] = (qg["Inquiries"] - qg["Booked"]).clip(lower=0)
+                qg = qg.sort_values("Inquiries", ascending=False)
                 if qg.empty:
                     st.caption("No conversation-channel leads in this window.")
                 else:
                     import altair as _altq
                     _qc1, _qc2 = st.columns([3, 2])
                     with _qc1:
-                        _qlong = qg.melt("Platform", value_vars=["Queries", "Booked"],
-                                         var_name="Metric", value_name="Count")
-                        _qbar = (_altq.Chart(_qlong).mark_bar(cornerRadius=2).encode(
+                        _qlong = qg.melt("Platform", value_vars=["Booked", "Not booked"],
+                                         var_name="Status", value_name="Count")
+                        _qbar = (_altq.Chart(_qlong).mark_bar().encode(
                             x=_altq.X("Platform:N", sort=qg["Platform"].tolist(), title=None,
                                       axis=_altq.Axis(labelAngle=0, labelFontSize=12)),
-                            xOffset=_altq.XOffset("Metric:N", sort=["Queries", "Booked"]),
                             y=_altq.Y("Count:Q", title=None),
-                            color=_altq.Color("Metric:N", sort=["Queries", "Booked"],
-                                              scale=_altq.Scale(domain=["Queries", "Booked"],
-                                                                range=["#7A52CC", "#2EAD8F"]),
+                            color=_altq.Color("Status:N", sort=["Booked", "Not booked"],
+                                              scale=_altq.Scale(domain=["Booked", "Not booked"],
+                                                                range=["#2EAD8F", "#C9CCD1"]),
                                               legend=_altq.Legend(title=None, orient="top")),
-                            tooltip=["Platform:N", "Metric:N", "Count:Q"])
+                            order=_altq.Order("Status:N", sort="descending"),
+                            tooltip=["Platform:N", "Status:N", "Count:Q"])
                             .properties(height=300).configure_view(strokeWidth=0))
                         st.altair_chart(_qbar, use_container_width=True)
                     with _qc2:
-                        _qs = pd.concat([qg[["Platform", "Queries", "Booked"]], pd.DataFrame([{
-                            "Platform": "TOTAL", "Queries": int(qg["Queries"].sum()),
+                        _qs = pd.concat([qg[["Platform", "Inquiries", "Booked"]], pd.DataFrame([{
+                            "Platform": "TOTAL", "Inquiries": int(qg["Inquiries"].sum()),
                             "Booked": int(qg["Booked"].sum())}])], ignore_index=True)
                         st.dataframe(_qs, hide_index=True, use_container_width=True, height=300)
-                        st.caption("**Queries** = DM inquiries still un-booked · **Booked** = leads "
-                                   "from that channel who booked (now classified under their source).")
+                        st.caption("**Inquiries** = contacts via that channel · **Booked** = booked an "
+                                   "appointment **created on/after** the query date (a subset).")
+
+                # ---- All conversation leads — same columns as the Bookings table ----
+                st.markdown("**All conversation leads** — same detail as Bookings "
+                            "(Appt Created Date is on/after the query date)")
+                _ctbl = _leads_emails(_chan).sort_values("Appt Created Date", ascending=False)
+                st.dataframe(_ctbl, hide_index=True, use_container_width=True, height=440)
+                _dl(_ctbl, "Download (CSV)", "queries_channels")
 
             elif card == "Bookings":
                 st.caption(f"Lead→Booking rate **{ltb*100:.0f}%** ({cur_booked:,} of {n_leads:,} leads)")
