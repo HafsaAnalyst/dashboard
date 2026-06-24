@@ -5352,7 +5352,7 @@ with tab_e1:
         # Unknown, Direct call, SMS, Web Chat, Email, Other/Unknown, ...) folds into
         # "Others". Queries keep their own row (separate scorecard). The granular
         # refined_source stays on e1 for the Others / Social drill-downs.
-        SRC_RENAME = {"Paid Social": "Paid Leads", "Organic Search": "Website Leads",
+        SRC_RENAME = {"Paid Social": "Paid Leads", "Organic Search": "Organic Search",
                       "Social media": "Social Media", "Referral": "Referrals",
                       "Walk-in": "Walk-in", "Direct": "Direct"}
 
@@ -5431,6 +5431,7 @@ with tab_e1:
                 "Calendar Name": cal.values,
                 "Pipeline": dd["pipeline"].fillna("—").values,
                 "Stage": dd["stage"].fillna("—").values,
+                "Status": dd["status"].fillna("—").replace("", "—").values,
                 "Name": dd["contact_name"].fillna("—").replace("", "—").values,
                 "Phone": dd["phone"].fillna("—").replace("", "—").values,
             })
@@ -5857,19 +5858,6 @@ with tab_e1:
                     st.dataframe(rt, hide_index=True, use_container_width=True, height=420)
                     _dl(rt, "Download (CSV)", "revenue")
 
-            elif card == "Blended CPA":
-                cpa_txt = f"${blended_cpa:,.0f}" if blended_cpa else "—"
-                st.caption(f"**{cpa_txt}** = ${spend_aud:,.0f} Meta spend ÷ {total_appts:,} "
-                           "appointments booked in the window (all sources blended).")
-                st.markdown("**By source — booking ratio**")
-                st.dataframe(_fmt_summary(["Leads", "Booked", "Booking Rate"]),
-                             hide_index=True, use_container_width=True, height=300)
-                adf = e1[e1["appt_booked"] == 1]
-                st.markdown(f"**Booked appointments · {len(adf):,} contacts**")
-                tbl = _leads_emails(adf).sort_values("Appt Created Date", ascending=False)
-                st.dataframe(tbl, hide_index=True, use_container_width=True, height=440)
-                _dl(tbl, "Download (CSV)", "blended_cpa")
-
         # ---- Scorecards: click a card to open its drill-down modal ----
         def _e1_scorecard(col, name, value, *extra):
             lines = [name.upper(), value] + [x for x in extra if x]
@@ -5884,7 +5872,7 @@ with tab_e1:
         # (every other source).
         n_meta_leads = int((leads_df["refined_source"] == "Paid Social").sum())
         n_organic_leads = n_leads - n_meta_leads
-        sub = f"{n_meta_leads:,} Paid Leads · {n_organic_leads:,} Website / other"
+        sub = f"{n_meta_leads:,} Paid Leads · {n_organic_leads:,} Organic / other"
         kc = st.columns(3)
         _e1_scorecard(kc[0], "Leads", f"{n_leads:,}", sub,
                       _delta_md(n_leads, p_leads, higher_is_better=True, fmt="pct"))
@@ -5900,17 +5888,14 @@ with tab_e1:
         blended_cpa = (spend_aud / total_appts) if total_appts else None
         p_blended_cpa = (p_spend_aud / p_total_appts) if p_total_appts else None
 
-        kc2 = st.columns(5)
+        kc2 = st.columns(4)
         _e1_scorecard(kc2[0], "Ad Spend", f"${spend_aud:,.0f}", f"Meta · AUD @ {fx:.2f}",
                       _delta_md(spend_aud, p_spend_aud, higher_is_better=True, fmt="pct"))
         _e1_scorecard(kc2[1], "Bookings", f"{ltb*100:.0f}%", f"{cur_booked:,} of {n_leads:,} leads",
                       _delta_md(ltb, p_ltb, higher_is_better=True, fmt="pts"))
         _e1_scorecard(kc2[2], "Show Rate", f"{sr*100:.0f}%", f"{cur_showed:,} of {cur_booked:,} booked",
                       _delta_md(sr, p_sr, higher_is_better=True, fmt="pts"))
-        _e1_scorecard(kc2[3], "Blended CPA", f"${blended_cpa:,.0f}" if blended_cpa else "—",
-                      f"spend ÷ {total_appts:,} appts",
-                      _delta_md(blended_cpa, p_blended_cpa, higher_is_better=False, fmt="pct"))
-        _e1_scorecard(kc2[4], "Revenue", f"${rev_aud:,.0f}", f"GHL payments · {len(rev_cur):,} payers",
+        _e1_scorecard(kc2[3], "Revenue", f"${rev_aud:,.0f}", f"GHL payments · {len(rev_cur):,} payers",
                       _delta_md(rev_aud, p_rev_aud, higher_is_better=True, fmt="pct"))
 
         st.caption(
