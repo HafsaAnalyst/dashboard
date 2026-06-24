@@ -5465,9 +5465,9 @@ with tab_e1:
                     "  AND p.pipeline_name='L2C - Education' "
                     "JOIN dim_stages s ON s.stage_id=o.stage_id "
                     "  AND LOWER(s.stage_name)='non responders'").fetchall())
-                leads_df = leads_df.copy()
-                leads_df["_is_nr"] = leads_df["contact_id"].isin(_nr_ids).astype(int)
-                _nr_by_grp = leads_df.groupby("src_group")["_is_nr"].sum()
+                _ldf_nr = leads_df.assign(
+                    _is_nr=leads_df["contact_id"].isin(_nr_ids).astype(int))
+                _nr_by_grp = _ldf_nr.groupby("src_group")["_is_nr"].sum()
                 _nr_col = _sx["Source"].map(_nr_by_grp).fillna(0).astype(int)
                 # Booked / Showed cells carry the booking-/show-rate with a
                 # ▲/▼ vs last period (coloured green/red).
@@ -5642,37 +5642,40 @@ with tab_e1:
                     _present = [s for s in _order if s in set(_long["series"])]
                     _xfmt = "%b %d" if gran != "Month" else "%b %y"
                     _baseX = alt.X("period:T", title=None, axis=alt.Axis(format=_xfmt))
-                    # nearest-point selection on the x value → unified hover tooltip
+                    # hover: nearest x → unified tooltip. Owned by the full-height rule
+                    # with nearest=True, so hovering ANYWHERE in a day's band shows it.
                     _near = alt.selection_point(nearest=True, on="mouseover",
-                                                fields=["period"], empty=False)
-                    _lines = alt.Chart(_long).mark_line(point=True).encode(
-                        x=_baseX, y=alt.Y("Count:Q", title=None),
-                        color=alt.Color("series:N", sort=_present,
-                                        scale=alt.Scale(domain=_present,
-                                                        range=[_crange[s] for s in _present]),
-                                        legend=alt.Legend(title=None, orient="top", columns=2)))
-                    # transparent selectors across the x-domain that own the selection
-                    _selx = alt.Chart(_long).mark_point().encode(
-                        x=_baseX, opacity=alt.value(0)).add_params(_near)
-                    # emphasise every series' point at the hovered x
-                    _pts = _lines.mark_point(size=65, filled=True).encode(
-                        opacity=alt.condition(_near, alt.value(1), alt.value(0)))
-                    # vertical rule + ONE tooltip listing all series at the hovered x
+                                                fields=["period"], empty=False, clear="mouseout")
+                    # legend click: toggle a series on/off (click again restores).
+                    _leg = alt.selection_point(fields=["series"], bind="legend")
+                    _color = alt.Color("series:N", sort=_present,
+                                       scale=alt.Scale(domain=_present,
+                                                       range=[_crange[s] for s in _present]),
+                                       legend=alt.Legend(title=None, orient="top", columns=2))
+                    _lines = (alt.Chart(_long).mark_line(point=True).encode(
+                        x=_baseX, y=alt.Y("Count:Q", title=None), color=_color,
+                        opacity=alt.condition(_leg, alt.value(1), alt.value(0.06)))
+                        .add_params(_leg))
+                    _pts = _lines.mark_point(size=70, filled=True).encode(
+                        opacity=alt.condition(_near & _leg, alt.value(1), alt.value(0)))
+                    # full-height vertical rule + ONE tooltip listing every series at
+                    # the hovered day; owns the nearest selection (GA4-style hover).
                     _rule = (alt.Chart(_long)
                              .transform_pivot("series", value="Count", groupby=["period"])
-                             .mark_rule(color="#9aa0a6").encode(
+                             .mark_rule(color="#9aa0a6", size=1.5).encode(
                                  x=_baseX,
-                                 opacity=alt.condition(_near, alt.value(0.4), alt.value(0)),
+                                 opacity=alt.condition(_near, alt.value(0.45), alt.value(0)),
                                  tooltip=([alt.Tooltip("period:T", title="Date", format=_xfmt)]
-                                          + [alt.Tooltip(f"{s}:Q", title=s.title()) for s in _present])))
-                    _ch = alt.layer(_lines, _selx, _pts, _rule).properties(height=230)
+                                          + [alt.Tooltip(f"{s}:Q", title=s.title()) for s in _present]))
+                             .add_params(_near))
+                    _ch = alt.layer(_lines, _pts, _rule).properties(height=240)
                     st.altair_chart(_ch, use_container_width=True)
                     st.caption(
                         f"Booked vs Showed by {gran.lower()} over the **selected range** "
                         f"({since.strftime('%b %d')} → {until.strftime('%b %d, %Y')}, bold) vs the "
                         f"**previous period** ({prior_since.strftime('%b %d')} → "
                         f"{prior_until.strftime('%b %d, %Y')}, light) — aligned day-by-day. "
-                        "Hover any point to see all four values for that day.")
+                        "Hover anywhere for that day's values · click a legend item to toggle its line.")
 
                 if picked == "Others":
                     st.markdown("**Others — breakdown** (Returning Client · Direct Bookings · "
@@ -6287,9 +6290,10 @@ with tab_funnels1:
             return 4
         if pn == "L2C - VISA" and so >= g((pn, "MARA Appointment Booked"), B):
             return 4
-        if pn == "L2C - Education" and so >= g((pn, "Pre Sales (1)"), B):
+        # L2C-Education renamed: Pre Sales (1) → "Pre Sales", Qualifier → "Busy Leads".
+        if pn == "L2C - Education" and so >= g((pn, "Pre Sales"), g((pn, "Pre Sales (1)"), B)):
             return 3
-        if pn == "L2C - Education" and so >= g((pn, "Qualifier"), B):
+        if pn == "L2C - Education" and so >= g((pn, "Busy Leads"), g((pn, "Qualifier"), B)):
             return 2
         return 1
 

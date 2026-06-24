@@ -2451,6 +2451,8 @@ labelled AS (          -- map raw stage name → funnel column; distinct lead×s
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'follow up 2%'      THEN 'Follow up 2'
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'pre sales (1)%'    THEN 'Pre Sales (1)'
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'pre sales (2)%'    THEN 'Pre Sales (2)'
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'non responders%'   THEN 'Pre Sales (2)'  -- L2C-Edu rename
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'pre sales%'        THEN 'Pre Sales (1)'  -- L2C-Edu rename
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'booking link%'     THEN 'Booking Link Shared'
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'appointment booked%' THEN 'Appointment Booked'
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'post consultation%' THEN 'Post Consultation'
@@ -2522,6 +2524,8 @@ labelled AS (
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'follow up 2%'       THEN 'Follow up 2'
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'pre sales (1)%'     THEN 'Pre Sales (1)'
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'pre sales (2)%'     THEN 'Pre Sales (2)'
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'non responders%'    THEN 'Pre Sales (2)'  -- L2C-Edu rename
+            WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'pre sales%'         THEN 'Pre Sales (1)'  -- L2C-Edu rename
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'booking link%'      THEN 'Booking Link Shared'
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'appointment booked%' THEN 'Appointment Booked'
             WHEN LOWER(COALESCE(stage_raw, '')) LIKE 'post consultation%' THEN 'Post Consultation'
@@ -2584,7 +2588,8 @@ seen AS (   -- every stage a cohort contact has ever been in (current + transiti
 ),
 presales AS (
     SELECT DISTINCT contact_id FROM seen
-    WHERE stage IN ('pre sales (1)', 'pre sales (2)', 'follow up 1', 'follow up 2')
+    WHERE stage IN ('pre sales (1)', 'pre sales (2)', 'pre sales', 'non responders',
+                    'follow up 1', 'follow up 2')   -- incl. L2C-Edu renames
 ),
 open_opp AS (
     SELECT DISTINCT contact_id FROM fact_opportunities
