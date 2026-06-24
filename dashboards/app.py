@@ -5465,9 +5465,12 @@ with tab_e1:
                     "  AND p.pipeline_name='L2C - Education' "
                     "JOIN dim_stages s ON s.stage_id=o.stage_id "
                     "  AND LOWER(s.stage_name)='non responders'").fetchall())
+                # group via _src_group(refined_source) directly — leads_df was sliced
+                # before e1 got its src_group column, so it may not carry it.
                 _ldf_nr = leads_df.assign(
-                    _is_nr=leads_df["contact_id"].isin(_nr_ids).astype(int))
-                _nr_by_grp = _ldf_nr.groupby("src_group")["_is_nr"].sum()
+                    _is_nr=leads_df["contact_id"].isin(_nr_ids).astype(int),
+                    _grp=leads_df["refined_source"].map(_src_group))
+                _nr_by_grp = _ldf_nr.groupby("_grp")["_is_nr"].sum()
                 _nr_col = _sx["Source"].map(_nr_by_grp).fillna(0).astype(int)
                 # Booked / Showed cells carry the booking-/show-rate with a
                 # ▲/▼ vs last period (coloured green/red).
