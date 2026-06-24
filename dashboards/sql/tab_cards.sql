@@ -1865,6 +1865,12 @@ SELECT
     ls.event_source                                                        AS form_source,
     NULLIF(LOWER(regexp_extract(ls.page_url, 'utm_source=([^&]+)', 1)), '') AS utm_source,
     cc.channel                                                             AS dm_channel,
+    -- friendly conversation channel for a Query (Phone/SMS split into SMS vs Call)
+    CASE
+        WHEN cc.channel = 'Phone/SMS' AND cc.last_message_type = 'TYPE_SMS' THEN 'SMS'
+        WHEN cc.channel = 'Phone/SMS'                                       THEN 'Call'
+        ELSE cc.channel
+    END                                                                    AS query_channel,
     -- which social platform a (social) lead came from — conversation channel
     -- first, then the form referrer / utm_source.
     CASE

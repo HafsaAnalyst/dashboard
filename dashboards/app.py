@@ -5418,12 +5418,22 @@ with tab_e1:
                             else ("Booked" if r["appt_booked"] == 1 else "—"), axis=1)
             cal = dd.apply(lambda r: r["calendar_name"]
                            if (r["appt_booked"] == 1 and pd.notna(r["calendar_name"])) else "—", axis=1)
+
+            # Platform: social platform for Social/Paid leads; for Queries the
+            # conversation channel (SMS / Call / WhatsApp / TikTok / Instagram / ...).
+            def _plat(r):
+                rs = r["refined_source"]
+                if rs in ("Social media", "Paid Social"):
+                    v = r.get("social_platform")
+                elif rs == "Queries":
+                    v = r.get("query_channel")
+                else:
+                    v = None
+                return v if (pd.notna(v) and str(v) not in ("", "None")) else "—"
             return pd.DataFrame({
                 "Email": dd["email"].fillna("(no email)").values,
                 "Source": dd["refined_source"].values,
-                "Platform": dd["social_platform"].where(
-                    dd["refined_source"].isin(["Social media", "Paid Social"]), "—")
-                    .fillna("—").replace("", "—").values,
+                "Platform": dd.apply(_plat, axis=1).values,
                 "Lead Created Date": pd.to_datetime(dd["lead_date"]).dt.strftime("%Y-%m-%d").values,
                 "Appt Created Date": dd["appt_booked_date"].map(
                     lambda v: pd.to_datetime(v).strftime("%Y-%m-%d") if pd.notna(v) else "—").values,
