@@ -5354,7 +5354,7 @@ with tab_e1:
         # refined_source stays on e1 for the Others / Social drill-downs.
         SRC_RENAME = {"Paid Social": "Paid Leads", "Organic Search": "Website Leads",
                       "Social media": "Social Media", "Referral": "Referrals",
-                      "Walk-in": "Walk-in"}
+                      "Walk-in": "Walk-in", "Direct": "Direct"}
 
         def _src_group(s):
             if s == "Queries":
@@ -5489,6 +5489,28 @@ with tab_e1:
                         picked = summ.iloc[int(rows[0])]["Source"]
                 except Exception:
                     picked = None
+
+                # ---- Pie: each source's share of total Bookings ----
+                _pdf = _sx[["Source", "Booked"]].copy()
+                _pdf = _pdf[_pdf["Booked"].astype(int) > 0]
+                if not _pdf.empty:
+                    import altair as _altp
+                    _pdf["Booked"] = _pdf["Booked"].astype(int)
+                    _tbk = int(_pdf["Booked"].sum())
+                    _pdf["Pct"] = _pdf["Booked"] / (_tbk or 1)
+                    _pdf["Label"] = _pdf["Source"] + " · " + (_pdf["Pct"] * 100).round().astype(int).astype(str) + "%"
+                    st.markdown("**Booked share by source**")
+                    _pie = (_altp.Chart(_pdf).mark_arc(innerRadius=55, stroke="#fff", strokeWidth=1).encode(
+                        theta=_altp.Theta("Booked:Q", stack=True),
+                        color=_altp.Color("Source:N", sort=_pdf["Source"].tolist(),
+                                          legend=_altp.Legend(title="Source")),
+                        order=_altp.Order("Booked:Q", sort="descending"),
+                        tooltip=["Source:N", "Booked:Q", _altp.Tooltip("Pct:Q", format=".0%")])
+                        .properties(height=260))
+                    st.altair_chart(_pie, use_container_width=True)
+                    st.caption(f"Each slice = that source's share of the **{_tbk:,} bookings** in the "
+                               "period (appointments booked).")
+
                 def _nested(base_df, group_col, label, key, prior_df=None):
                     nb = (base_df.groupby(group_col)
                           .agg(Leads=("contact_id", "count"), Opportunities=("n_opps", "sum"),
@@ -5536,45 +5558,59 @@ with tab_e1:
                     db = base_df if not p2 else base_df[base_df[group_col].fillna("—") == p2]
                     return db, f"{label} — {p2 or 'all'}"
 
-                # ---- Booked vs Showed trend (between Table 1 and Table 2) ----
+                # ---- Booked vs Showed trend — SELECTED range + previous-period overlay ----
                 st.markdown("**Booked vs Showed — trend**")
                 gran = st.segmented_control(
-                    "Trend by", ["Day", "Week", "Month"], key="e1_trend_gran") or "Month"
+                    "Trend by", ["Day", "Week", "Month"], key="e1_trend_gran") or "Day"
 
-                def _months_back(d, n):
-                    m = d.month - 1 - n
-                    return date(d.year + m // 12, m % 12 + 1, 1)
+                # Shift the previous period forward so it aligns day-by-day onto the
+                # current axis (comparison periods are the same length).
+                _offset_days = (since - prior_since).days
 
-                if gran == "Day":
-                    _tsince = until - timedelta(days=29)
-                elif gran == "Week":
-                    _tsince = until - timedelta(weeks=11)
-                else:
-                    _tsince = _months_back(until, 11)
-                _tr = run_df("vw_exec1_lead_detail",
-                             {"since": _tsince.isoformat(), "until": until.isoformat()})
-                if not _tr.empty:
-                    _tr = _tr[~_tr["refined_source"].isin(["No Activity", "Queries"])]
-                _tb = _tr[_tr["appt_booked"] == 1].copy() if not _tr.empty else _tr
-                if not _tb.empty:
-                    _tb["dt"] = pd.to_datetime(_tb["appt_booked_date"], errors="coerce")
-                    _tb = _tb.dropna(subset=["dt"])
-                if _tb.empty:
-                    st.caption("No bookings in the trailing window to chart.")
-                else:
+                def _trend_series(df, shift_days=0):
+                    if df is None or df.empty:
+                        return pd.DataFrame(columns=["period", "Booked", "Showed"])
+                    d = df[df["appt_booked"] == 1].copy()
+                    if d.empty:
+                        return pd.DataFrame(columns=["period", "Booked", "Showed"])
+                    d["dt"] = pd.to_datetime(d["appt_booked_date"], errors="coerce")
+                    d = d.dropna(subset=["dt"])
+                    if shift_days:
+                        d["dt"] = d["dt"] + pd.Timedelta(days=shift_days)
+                    # keep only the selected window (prior is shifted onto it)
+                    d = d[(d["dt"].dt.date >= since) & (d["dt"].dt.date <= until)]
+                    if d.empty:
+                        return pd.DataFrame(columns=["period", "Booked", "Showed"])
                     if gran == "Day":
-                        _tb["period"] = _tb["dt"].dt.normalize()
+                        d["period"] = d["dt"].dt.normalize()
                     elif gran == "Week":
-                        _tb["period"] = (_tb["dt"]
-                                         - pd.to_timedelta(_tb["dt"].dt.weekday, unit="D")).dt.normalize()
+                        d["period"] = (d["dt"]
+                                       - pd.to_timedelta(d["dt"].dt.weekday, unit="D")).dt.normalize()
                     else:
-                        _tb["period"] = _tb["dt"].dt.to_period("M").dt.to_timestamp()
-                    _bk = _tb.groupby("period").size().rename("Booked")
-                    _sh = _tb[_tb["appt_showed"] == 1].groupby("period").size().rename("Showed")
-                    _ts = pd.concat([_bk, _sh], axis=1).fillna(0).reset_index()
-                    _ts[["Booked", "Showed"]] = _ts[["Booked", "Showed"]].astype(int)
-                    _long = _ts.melt("period", value_vars=["Booked", "Showed"],
-                                     var_name="Metric", value_name="Count")
+                        d["period"] = d["dt"].dt.to_period("M").dt.to_timestamp()
+                    bk = d.groupby("period").size().rename("Booked")
+                    sh = d[d["appt_showed"] == 1].groupby("period").size().rename("Showed")
+                    o = pd.concat([bk, sh], axis=1).fillna(0).reset_index()
+                    o[["Booked", "Showed"]] = o[["Booked", "Showed"]].astype(int)
+                    return o
+
+                _cur = _trend_series(leads_df)
+                _e1p_clean = (e1p[~e1p["refined_source"].isin(["No Activity", "Queries"])]
+                              if not e1p.empty else e1p)
+                _pri = _trend_series(_e1p_clean, shift_days=_offset_days)
+
+                def _melt_set(o, lbl):
+                    if o.empty:
+                        return pd.DataFrame(columns=["period", "Metric", "Count", "Period"])
+                    m = o.melt("period", value_vars=["Booked", "Showed"],
+                               var_name="Metric", value_name="Count")
+                    m["Period"] = lbl
+                    return m
+                _long = pd.concat([_melt_set(_cur, "Current"), _melt_set(_pri, "Previous")],
+                                  ignore_index=True)
+                if _long.empty:
+                    st.caption("No bookings in the selected range to chart.")
+                else:
                     import altair as alt
                     _ch = (alt.Chart(_long).mark_line(point=True).encode(
                         x=alt.X("period:T", title=None,
@@ -5584,18 +5620,24 @@ with tab_e1:
                                         scale=alt.Scale(domain=["Booked", "Showed"],
                                                         range=["#4DA6FF", "#7A52CC"]),
                                         legend=alt.Legend(title=None, orient="top")),
+                        strokeDash=alt.StrokeDash(
+                            "Period:N", sort=["Current", "Previous"],
+                            scale=alt.Scale(domain=["Current", "Previous"], range=[[1, 0], [4, 4]]),
+                            legend=alt.Legend(title=None, orient="top")),
                         tooltip=[alt.Tooltip("period:T", title="Period"),
-                                 "Metric:N", "Count:Q"])
-                        .properties(height=200))
+                                 "Metric:N", "Count:Q", "Period:N"])
+                        .properties(height=210))
                     st.altair_chart(_ch, use_container_width=True)
-                    st.caption(f"All leads · Booked vs Showed by {gran.lower()} "
-                               f"({_tsince.strftime('%b %d, %Y')} → {until.strftime('%b %d, %Y')}). "
-                               "Widen the date filter for a longer history.")
+                    st.caption(
+                        f"Booked vs Showed by {gran.lower()} over the **selected range** "
+                        f"({since.strftime('%b %d')} → {until.strftime('%b %d, %Y')}, solid) vs the "
+                        f"**previous period** ({prior_since.strftime('%b %d')} → "
+                        f"{prior_until.strftime('%b %d, %Y')}, dashed) — aligned day-by-day.")
 
                 if picked == "Others":
-                    st.markdown("**Others — breakdown** (Returning Client · Direct · "
-                                "Direct Bookings · Agentcis · Unknown · Direct call · SMS · "
-                                "Web Chat · Email — click a row)")
+                    st.markdown("**Others — breakdown** (Returning Client · Direct Bookings · "
+                                "Agentcis · Unknown · Direct call · SMS · Web Chat · Email — "
+                                "click a row)")
                     _opr = (e1p[~e1p["refined_source"].isin(list(SRC_RENAME) + ["Queries", "No Activity"])]
                             if not e1p.empty else None)
                     base, ttl = _nested(e1[e1["src_group"] == "Others"], "refined_source",
