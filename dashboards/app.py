@@ -5740,19 +5740,49 @@ with tab_e1:
                 tbl = _leads_emails(q).sort_values("Lead Created Date", ascending=False)
                 st.dataframe(tbl, hide_index=True, use_container_width=True, height=420)
                 _dl(tbl, "Download (CSV)", "queries")
-                st.markdown("**Summary**")
-                qr = src[src["Source"] == "Queries"]
-                if qr.empty:
-                    st.caption("No queries in this window.")
+
+                # ---- By platform: Queries vs Booked (chart left · stats right) ----
+                # Counts ACROSS every lead that came via each conversation channel —
+                # not just strict Queries — because a DM query that books is
+                # re-classified out of 'Queries' (queries require no appointment), so
+                # the booked WhatsApp/TikTok/etc. conversions live under other sources.
+                st.markdown("---")
+                st.markdown("**By platform — queries vs booked** "
+                            "(conversation channel: SMS · Call · WhatsApp · TikTok · Instagram · …)")
+                _chan = e1[e1["query_channel"].notna()
+                           & (e1["query_channel"].astype(str).str.strip() != "")]
+                qg = (_chan.groupby("query_channel")
+                      .agg(Queries=("refined_source", lambda s: int((s == "Queries").sum())),
+                           Booked=("appt_booked", lambda s: int(s.sum())))
+                      .reset_index().rename(columns={"query_channel": "Platform"}))
+                qg = qg.sort_values("Queries", ascending=False)
+                if qg.empty:
+                    st.caption("No conversation-channel leads in this window.")
                 else:
-                    qs = pd.DataFrame({
-                        "Leads": qr["Leads"].astype(int).values,
-                        "Opportunities": qr["Opportunities"].astype(int).values,
-                        "Booked": qr["Booked"].astype(int).values,
-                        "Showed": qr["Showed"].astype(int).values,
-                        "% of Leads": (qr["% of Leads"] * 100).map(lambda v: f"{v:.0f}%").values,
-                    })
-                    st.dataframe(qs, hide_index=True, use_container_width=True)
+                    import altair as _altq
+                    _qc1, _qc2 = st.columns([3, 2])
+                    with _qc1:
+                        _qlong = qg.melt("Platform", value_vars=["Queries", "Booked"],
+                                         var_name="Metric", value_name="Count")
+                        _qbar = (_altq.Chart(_qlong).mark_bar(cornerRadius=2).encode(
+                            x=_altq.X("Platform:N", sort=qg["Platform"].tolist(), title=None,
+                                      axis=_altq.Axis(labelAngle=0, labelFontSize=12)),
+                            xOffset=_altq.XOffset("Metric:N", sort=["Queries", "Booked"]),
+                            y=_altq.Y("Count:Q", title=None),
+                            color=_altq.Color("Metric:N", sort=["Queries", "Booked"],
+                                              scale=_altq.Scale(domain=["Queries", "Booked"],
+                                                                range=["#7A52CC", "#2EAD8F"]),
+                                              legend=_altq.Legend(title=None, orient="top")),
+                            tooltip=["Platform:N", "Metric:N", "Count:Q"])
+                            .properties(height=300).configure_view(strokeWidth=0))
+                        st.altair_chart(_qbar, use_container_width=True)
+                    with _qc2:
+                        _qs = pd.concat([qg[["Platform", "Queries", "Booked"]], pd.DataFrame([{
+                            "Platform": "TOTAL", "Queries": int(qg["Queries"].sum()),
+                            "Booked": int(qg["Booked"].sum())}])], ignore_index=True)
+                        st.dataframe(_qs, hide_index=True, use_container_width=True, height=300)
+                        st.caption("**Queries** = DM inquiries still un-booked · **Booked** = leads "
+                                   "from that channel who booked (now classified under their source).")
 
             elif card == "Bookings":
                 st.caption(f"Lead→Booking rate **{ltb*100:.0f}%** ({cur_booked:,} of {n_leads:,} leads)")
