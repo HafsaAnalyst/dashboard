@@ -5457,6 +5457,18 @@ with tab_e1:
                 # recompute "% of Leads" over the non-Queries total.
                 _sx = src[src["Source"] != "Queries"].copy().reset_index(drop=True)
                 _tot = int(_sx["Leads"].sum())
+                # Non Responders = leads from the range cohort currently sitting in the
+                # L2C-Education 'Non Responders' stage (formerly 'Pre Sales (2)').
+                _nr_ids = set(r[0] for r in db_exec(
+                    "SELECT DISTINCT o.contact_id FROM fact_opportunities o "
+                    "JOIN dim_pipelines p ON p.pipeline_id=o.pipeline_id "
+                    "  AND p.pipeline_name='L2C - Education' "
+                    "JOIN dim_stages s ON s.stage_id=o.stage_id "
+                    "  AND LOWER(s.stage_name)='non responders'").fetchall())
+                leads_df = leads_df.copy()
+                leads_df["_is_nr"] = leads_df["contact_id"].isin(_nr_ids).astype(int)
+                _nr_by_grp = leads_df.groupby("src_group")["_is_nr"].sum()
+                _nr_col = _sx["Source"].map(_nr_by_grp).fillna(0).astype(int)
                 # Booked / Showed cells carry the booking-/show-rate with a
                 # ▲/▼ vs last period (coloured green/red).
                 _bk_txt, _bk_col, _sh_txt, _sh_col = [], [], [], []
@@ -5469,7 +5481,7 @@ with tab_e1:
                 summ = pd.DataFrame({
                     "Source": _sx["Source"].values,
                     "Leads": _sx["Leads"].astype(int).values,
-                    "Opportunities": _sx["Opportunities"].astype(int).values,
+                    "Non Responders": _nr_col.values,
                     "Booked": _bk_txt,
                     "Showed": _sh_txt,
                     "% of Leads": ((_sx["Leads"] / _tot * 100) if _tot else _sx["Leads"] * 0)
@@ -5490,26 +5502,35 @@ with tab_e1:
                 except Exception:
                     picked = None
 
-                # ---- Pie: each source's share of total Bookings ----
-                _pdf = _sx[["Source", "Booked"]].copy()
-                _pdf = _pdf[_pdf["Booked"].astype(int) > 0]
-                if not _pdf.empty:
-                    import altair as _altp
-                    _pdf["Booked"] = _pdf["Booked"].astype(int)
-                    _tbk = int(_pdf["Booked"].sum())
-                    _pdf["Pct"] = _pdf["Booked"] / (_tbk or 1)
-                    _pdf["Label"] = _pdf["Source"] + " · " + (_pdf["Pct"] * 100).round().astype(int).astype(str) + "%"
-                    st.markdown("**Booked share by source**")
-                    _pie = (_altp.Chart(_pdf).mark_arc(innerRadius=55, stroke="#fff", strokeWidth=1).encode(
-                        theta=_altp.Theta("Booked:Q", stack=True),
-                        color=_altp.Color("Source:N", sort=_pdf["Source"].tolist(),
-                                          legend=_altp.Legend(title="Source")),
-                        order=_altp.Order("Booked:Q", sort="descending"),
-                        tooltip=["Source:N", "Booked:Q", _altp.Tooltip("Pct:Q", format=".0%")])
-                        .properties(height=260))
-                    st.altair_chart(_pie, use_container_width=True)
-                    st.caption(f"Each slice = that source's share of the **{_tbk:,} bookings** in the "
-                               "period (appointments booked).")
+                # ---- Clustered bar chart: Leads · Non Responders · Booked · Showed by source ----
+                import altair as _altp
+                _clz = pd.DataFrame({
+                    "Source": _sx["Source"].values,
+                    "Leads": _sx["Leads"].astype(int).values,
+                    "Non Responders": _nr_col.values,
+                    "Booked": _sx["Booked"].astype(int).values,
+                    "Showed": _sx["Showed"].astype(int).values,
+                })
+                _src_order = _clz["Source"].tolist()           # already sorted by Leads desc
+                _metrics = ["Leads", "Non Responders", "Booked", "Showed"]
+                _clong = _clz.melt("Source", value_vars=_metrics, var_name="Metric", value_name="Count")
+                if not _clong.empty and _clong["Count"].sum() > 0:
+                    st.markdown("**Leads · Non Responders · Booked · Showed — by source**")
+                    _cbar = (_altp.Chart(_clong).mark_bar(cornerRadius=2).encode(
+                        x=_altp.X("Source:N", sort=_src_order, title=None,
+                                  axis=_altp.Axis(labelAngle=0, labelFontSize=12)),
+                        xOffset=_altp.XOffset("Metric:N", sort=_metrics),
+                        y=_altp.Y("Count:Q", title=None),
+                        color=_altp.Color("Metric:N", sort=_metrics,
+                                          scale=_altp.Scale(domain=_metrics,
+                                                            range=["#4DA6FF", "#f6995c", "#2EAD8F", "#7A52CC"]),
+                                          legend=_altp.Legend(title=None, orient="top")),
+                        tooltip=["Source:N", "Metric:N", "Count:Q"])
+                        .properties(height=300).configure_view(strokeWidth=0))
+                    st.altair_chart(_cbar, use_container_width=True)
+                    st.caption("**Non Responders** = leads from this range now in the L2C-Education "
+                               "*Non Responders* stage (formerly *Pre Sales (2)*). Booked / Showed = "
+                               "appointments booked / attended.")
 
                 def _nested(base_df, group_col, label, key, prior_df=None):
                     nb = (base_df.groupby(group_col)
