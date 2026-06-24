@@ -5440,9 +5440,124 @@ with tab_e1:
                                file_name=f"exec1_{key}_{since.isoformat()}_{until.isoformat()}.csv",
                                mime="text/csv", key=f"e1dl_{key}")
 
-        ICON = {"Leads": "👥", "Queries": "🔍", "Booked": "📅", "Showed": "✅",
-                "Conversions": "🎯", "Ad Spend": "💰", "Leads to Booking": "📈",
-                "Show Rate": "📊", "Revenue": "💵"}
+        def _bs_trend(key="e1_trend_gran"):
+            """Booked vs Showed trend over the selected range with the previous
+            period overlaid (light). Reused by Leads / Bookings / Show Rate."""
+            import altair as alt
+            st.markdown("**Booked vs Showed — trend**")
+            gran = st.segmented_control("Trend by", ["Day", "Week", "Month"], key=key) or "Day"
+            _offset_days = (since - prior_since).days
+
+            def _series(df, shift_days=0):
+                if df is None or df.empty:
+                    return pd.DataFrame(columns=["period", "Booked", "Showed"])
+                d = df[df["appt_booked"] == 1].copy()
+                if d.empty:
+                    return pd.DataFrame(columns=["period", "Booked", "Showed"])
+                d["dt"] = pd.to_datetime(d["appt_booked_date"], errors="coerce")
+                d = d.dropna(subset=["dt"])
+                if shift_days:
+                    d["dt"] = d["dt"] + pd.Timedelta(days=shift_days)
+                d = d[(d["dt"].dt.date >= since) & (d["dt"].dt.date <= until)]
+                if d.empty:
+                    return pd.DataFrame(columns=["period", "Booked", "Showed"])
+                if gran == "Day":
+                    d["period"] = d["dt"].dt.normalize()
+                elif gran == "Week":
+                    d["period"] = (d["dt"] - pd.to_timedelta(d["dt"].dt.weekday, unit="D")).dt.normalize()
+                else:
+                    d["period"] = d["dt"].dt.to_period("M").dt.to_timestamp()
+                bk = d.groupby("period").size().rename("Booked")
+                sh = d[d["appt_showed"] == 1].groupby("period").size().rename("Showed")
+                o = pd.concat([bk, sh], axis=1).fillna(0).reset_index()
+                o[["Booked", "Showed"]] = o[["Booked", "Showed"]].astype(int)
+                return o
+
+            _cur = _series(leads_df)
+            _e1pc = (e1p[~e1p["refined_source"].isin(["No Activity", "Queries"])]
+                     if not e1p.empty else e1p)
+            _pri = _series(_e1pc, shift_days=_offset_days)
+
+            def _melt(o, lbl):
+                if o.empty:
+                    return pd.DataFrame(columns=["period", "Metric", "Count", "Period"])
+                m = o.melt("period", value_vars=["Booked", "Showed"],
+                           var_name="Metric", value_name="Count")
+                m["Period"] = lbl
+                return m
+            _long = pd.concat([_melt(_cur, "Current"), _melt(_pri, "Previous")], ignore_index=True)
+            if _long.empty:
+                st.caption("No bookings in the selected range to chart.")
+                return
+            _long["series"] = _long["Metric"] + " " + _long["Period"].str.lower()
+            _ord = ["Booked current", "Showed current", "Booked previous", "Showed previous"]
+            _crange = {"Booked current": "#1E88E5", "Showed current": "#6A3FC0",
+                       "Booked previous": "#A9D4FF", "Showed previous": "#D2C4F2"}
+            _present = [s for s in _ord if s in set(_long["series"])]
+            _xfmt = "%b %d" if gran != "Month" else "%b %y"
+            _baseX = alt.X("period:T", title=None, axis=alt.Axis(format=_xfmt))
+            _near = alt.selection_point(nearest=True, on="mouseover",
+                                        fields=["period"], empty=False, clear="mouseout")
+            _leg = alt.selection_point(fields=["series"], bind="legend")
+            _color = alt.Color("series:N", sort=_present,
+                               scale=alt.Scale(domain=_present, range=[_crange[s] for s in _present]),
+                               legend=alt.Legend(title=None, orient="top", columns=2))
+            _lines = (alt.Chart(_long).mark_line(point=True).encode(
+                x=_baseX, y=alt.Y("Count:Q", title=None), color=_color,
+                opacity=alt.condition(_leg, alt.value(1), alt.value(0.06))).add_params(_leg))
+            _pts = _lines.mark_point(size=70, filled=True).encode(
+                opacity=alt.condition(_near & _leg, alt.value(1), alt.value(0)))
+            _rule = (alt.Chart(_long).transform_pivot("series", value="Count", groupby=["period"])
+                     .mark_rule(color="#9aa0a6", size=1.5).encode(
+                         x=_baseX, opacity=alt.condition(_near, alt.value(0.45), alt.value(0)),
+                         tooltip=([alt.Tooltip("period:T", title="Date", format=_xfmt)]
+                                  + [alt.Tooltip(f"{s}:Q", title=s.title()) for s in _present]))
+                     .add_params(_near))
+            st.altair_chart(alt.layer(_lines, _pts, _rule).properties(height=240),
+                            use_container_width=True)
+            st.caption(
+                f"Booked vs Showed by {gran.lower()} over the **selected range** "
+                f"({since.strftime('%b %d')} → {until.strftime('%b %d, %Y')}, bold) vs the "
+                f"**previous period** ({prior_since.strftime('%b %d')} → "
+                f"{prior_until.strftime('%b %d, %Y')}, light) — aligned day-by-day. "
+                "Hover anywhere for that day's values · click a legend item to toggle its line.")
+
+        def _src_bar(cols, palette, title):
+            """Clustered bar chart by source for numeric src columns (excl Queries)."""
+            import altair as alt
+            b = src[src["Source"] != "Queries"][["Source"] + cols].copy()
+            for c in cols:
+                b[c] = b[c].astype(int)
+            if b[cols].to_numpy().sum() == 0:
+                return
+            order = b.sort_values(cols[0], ascending=False)["Source"].tolist()
+            bl = b.melt("Source", value_vars=cols, var_name="Metric", value_name="Count")
+            st.markdown(f"**{title}**")
+            ch = (alt.Chart(bl).mark_bar(cornerRadius=2).encode(
+                x=alt.X("Source:N", sort=order, title=None,
+                        axis=alt.Axis(labelAngle=0, labelFontSize=12)),
+                xOffset=alt.XOffset("Metric:N", sort=cols),
+                y=alt.Y("Count:Q", title=None),
+                color=alt.Color("Metric:N", sort=cols,
+                                scale=alt.Scale(domain=cols, range=palette),
+                                legend=alt.Legend(title=None, orient="top")),
+                tooltip=["Source:N", "Metric:N", "Count:Q"])
+                .properties(height=290).configure_view(strokeWidth=0))
+            st.altair_chart(ch, use_container_width=True)
+
+        def _src_filter_emails(df, key, sort_col="Appt Created Date"):
+            """Source checkboxes (multiselect) → filtered email list + download."""
+            opts = sorted(df["refined_source"].map(_src_group).dropna().unique().tolist())
+            sel = st.multiselect("Show sources (leave empty for all)", opts, key=f"e1msel_{key}")
+            fdf = df if not sel else df[df["refined_source"].map(_src_group).isin(sel)]
+            tbl = _leads_emails(fdf).sort_values(sort_col, ascending=False)
+            st.markdown(f"**{len(tbl):,} contacts**")
+            st.dataframe(tbl, hide_index=True, use_container_width=True, height=440)
+            _dl(tbl, "Download (CSV)", key)
+
+        ICON = {"Leads": "👥", "Queries": "🔍", "Bookings": "📅", "Booked": "📅",
+                "Showed": "✅", "Conversions": "🎯", "Ad Spend": "💰",
+                "Show Rate": "📊", "Revenue": "💵", "Blended CPA": "🧮"}
 
         # ---- Drill-down modal: opens when a scorecard is clicked (Executive style) ----
         @st.dialog(" ", width="large")
@@ -5582,103 +5697,7 @@ with tab_e1:
                     db = base_df if not p2 else base_df[base_df[group_col].fillna("—") == p2]
                     return db, f"{label} — {p2 or 'all'}"
 
-                # ---- Booked vs Showed trend — SELECTED range + previous-period overlay ----
-                st.markdown("**Booked vs Showed — trend**")
-                gran = st.segmented_control(
-                    "Trend by", ["Day", "Week", "Month"], key="e1_trend_gran") or "Day"
-
-                # Shift the previous period forward so it aligns day-by-day onto the
-                # current axis (comparison periods are the same length).
-                _offset_days = (since - prior_since).days
-
-                def _trend_series(df, shift_days=0):
-                    if df is None or df.empty:
-                        return pd.DataFrame(columns=["period", "Booked", "Showed"])
-                    d = df[df["appt_booked"] == 1].copy()
-                    if d.empty:
-                        return pd.DataFrame(columns=["period", "Booked", "Showed"])
-                    d["dt"] = pd.to_datetime(d["appt_booked_date"], errors="coerce")
-                    d = d.dropna(subset=["dt"])
-                    if shift_days:
-                        d["dt"] = d["dt"] + pd.Timedelta(days=shift_days)
-                    # keep only the selected window (prior is shifted onto it)
-                    d = d[(d["dt"].dt.date >= since) & (d["dt"].dt.date <= until)]
-                    if d.empty:
-                        return pd.DataFrame(columns=["period", "Booked", "Showed"])
-                    if gran == "Day":
-                        d["period"] = d["dt"].dt.normalize()
-                    elif gran == "Week":
-                        d["period"] = (d["dt"]
-                                       - pd.to_timedelta(d["dt"].dt.weekday, unit="D")).dt.normalize()
-                    else:
-                        d["period"] = d["dt"].dt.to_period("M").dt.to_timestamp()
-                    bk = d.groupby("period").size().rename("Booked")
-                    sh = d[d["appt_showed"] == 1].groupby("period").size().rename("Showed")
-                    o = pd.concat([bk, sh], axis=1).fillna(0).reset_index()
-                    o[["Booked", "Showed"]] = o[["Booked", "Showed"]].astype(int)
-                    return o
-
-                _cur = _trend_series(leads_df)
-                _e1p_clean = (e1p[~e1p["refined_source"].isin(["No Activity", "Queries"])]
-                              if not e1p.empty else e1p)
-                _pri = _trend_series(_e1p_clean, shift_days=_offset_days)
-
-                def _melt_set(o, lbl):
-                    if o.empty:
-                        return pd.DataFrame(columns=["period", "Metric", "Count", "Period"])
-                    m = o.melt("period", value_vars=["Booked", "Showed"],
-                               var_name="Metric", value_name="Count")
-                    m["Period"] = lbl
-                    return m
-                _long = pd.concat([_melt_set(_cur, "Current"), _melt_set(_pri, "Previous")],
-                                  ignore_index=True)
-                if _long.empty:
-                    st.caption("No bookings in the selected range to chart.")
-                else:
-                    import altair as alt
-                    # 4 distinct series: current = bold colours, previous = light.
-                    _long["series"] = _long["Metric"] + " " + _long["Period"].str.lower()
-                    _order = ["Booked current", "Showed current",
-                              "Booked previous", "Showed previous"]
-                    _crange = {"Booked current": "#1E88E5", "Showed current": "#6A3FC0",
-                               "Booked previous": "#A9D4FF", "Showed previous": "#D2C4F2"}
-                    _present = [s for s in _order if s in set(_long["series"])]
-                    _xfmt = "%b %d" if gran != "Month" else "%b %y"
-                    _baseX = alt.X("period:T", title=None, axis=alt.Axis(format=_xfmt))
-                    # hover: nearest x → unified tooltip. Owned by the full-height rule
-                    # with nearest=True, so hovering ANYWHERE in a day's band shows it.
-                    _near = alt.selection_point(nearest=True, on="mouseover",
-                                                fields=["period"], empty=False, clear="mouseout")
-                    # legend click: toggle a series on/off (click again restores).
-                    _leg = alt.selection_point(fields=["series"], bind="legend")
-                    _color = alt.Color("series:N", sort=_present,
-                                       scale=alt.Scale(domain=_present,
-                                                       range=[_crange[s] for s in _present]),
-                                       legend=alt.Legend(title=None, orient="top", columns=2))
-                    _lines = (alt.Chart(_long).mark_line(point=True).encode(
-                        x=_baseX, y=alt.Y("Count:Q", title=None), color=_color,
-                        opacity=alt.condition(_leg, alt.value(1), alt.value(0.06)))
-                        .add_params(_leg))
-                    _pts = _lines.mark_point(size=70, filled=True).encode(
-                        opacity=alt.condition(_near & _leg, alt.value(1), alt.value(0)))
-                    # full-height vertical rule + ONE tooltip listing every series at
-                    # the hovered day; owns the nearest selection (GA4-style hover).
-                    _rule = (alt.Chart(_long)
-                             .transform_pivot("series", value="Count", groupby=["period"])
-                             .mark_rule(color="#9aa0a6", size=1.5).encode(
-                                 x=_baseX,
-                                 opacity=alt.condition(_near, alt.value(0.45), alt.value(0)),
-                                 tooltip=([alt.Tooltip("period:T", title="Date", format=_xfmt)]
-                                          + [alt.Tooltip(f"{s}:Q", title=s.title()) for s in _present]))
-                             .add_params(_near))
-                    _ch = alt.layer(_lines, _pts, _rule).properties(height=240)
-                    st.altair_chart(_ch, use_container_width=True)
-                    st.caption(
-                        f"Booked vs Showed by {gran.lower()} over the **selected range** "
-                        f"({since.strftime('%b %d')} → {until.strftime('%b %d, %Y')}, bold) vs the "
-                        f"**previous period** ({prior_since.strftime('%b %d')} → "
-                        f"{prior_until.strftime('%b %d, %Y')}, light) — aligned day-by-day. "
-                        "Hover anywhere for that day's values · click a legend item to toggle its line.")
+                _bs_trend()
 
                 if picked == "Others":
                     st.markdown("**Others — breakdown** (Returning Client · Direct Bookings · "
@@ -5723,27 +5742,26 @@ with tab_e1:
                     })
                     st.dataframe(qs, hide_index=True, use_container_width=True)
 
-            elif card in ("Booked", "Leads to Booking"):
-                st.caption(f"Lead→Booking rate **{ltb*100:.0f}%** ({cur_booked:,} of {n_leads:,} leads)")
+            elif card == "Bookings":
+                st.caption(f"**{cur_booked:,} bookings** · Lead→Booking rate "
+                           f"**{ltb*100:.0f}%** ({cur_booked:,} of {n_leads:,} leads)")
                 st.markdown("**Table 1 — by source (through booking rate)**")
-                st.dataframe(_fmt_summary(["Leads", "Opportunities", "Booked", "Booking Rate"]),
+                st.dataframe(_fmt_summary(["Leads", "Booked", "Booking Rate"]),
                              hide_index=True, use_container_width=True, height=300)
-                bdf = leads_df[leads_df["appt_booked"] == 1]
-                st.markdown(f"**Booked contacts · {len(bdf):,}**")
-                tbl = _leads_emails(bdf).sort_values("Appt Created Date", ascending=False)
-                st.dataframe(tbl, hide_index=True, use_container_width=True, height=440)
-                _dl(tbl, "Download (CSV)", "booked")
+                _src_bar(["Leads", "Booked"], ["#4DA6FF", "#2EAD8F"], "Leads vs Booked — by source")
+                _bs_trend()
+                st.markdown("**Booked contacts** — tick sources to filter")
+                _src_filter_emails(leads_df[leads_df["appt_booked"] == 1], "bookings")
 
-            elif card in ("Showed", "Show Rate"):
+            elif card == "Show Rate":
                 st.caption(f"Booking→Show rate **{sr*100:.0f}%** ({cur_showed:,} of {cur_booked:,} booked)")
                 st.markdown("**Table 1 — by source (through show rate)**")
-                st.dataframe(_fmt_summary(["Leads", "Booked", "Showed", "Show Rate"]),
+                st.dataframe(_fmt_summary(["Booked", "Showed", "Show Rate"]),
                              hide_index=True, use_container_width=True, height=300)
-                sdf = leads_df[leads_df["appt_showed"] == 1]
-                st.markdown(f"**Showed contacts · {len(sdf):,}**")
-                tbl = _leads_emails(sdf).sort_values("Appt Created Date", ascending=False)
-                st.dataframe(tbl, hide_index=True, use_container_width=True, height=440)
-                _dl(tbl, "Download (CSV)", "showed")
+                _src_bar(["Booked", "Showed"], ["#2EAD8F", "#7A52CC"], "Booked vs Showed — by source")
+                _bs_trend()
+                st.markdown("**Showed contacts** — tick sources to filter")
+                _src_filter_emails(leads_df[leads_df["appt_showed"] == 1], "showrate")
 
             elif card == "Conversions":
                 st.caption("**COE** = COE / Initial Received or Won in L2C-Education / "
@@ -5871,16 +5889,12 @@ with tab_e1:
         n_meta_leads = int((leads_df["refined_source"] == "Paid Social").sum())
         n_organic_leads = n_leads - n_meta_leads
         sub = f"{n_meta_leads:,} Paid Leads · {n_organic_leads:,} Website / other"
-        kc = st.columns(5)
+        kc = st.columns(3)
         _e1_scorecard(kc[0], "Leads", f"{n_leads:,}", sub,
                       _delta_md(n_leads, p_leads, higher_is_better=True, fmt="pct"))
         _e1_scorecard(kc[1], "Queries", f"{n_queries:,}", f"no pipeline · {q_booked:,} booked",
                       _delta_md(n_queries, p_queries, higher_is_better=True, fmt="pct"))
-        _e1_scorecard(kc[2], "Booked", f"{cur_booked:,}", "appointment booked",
-                      _delta_md(cur_booked, p_booked, higher_is_better=True, fmt="pct"))
-        _e1_scorecard(kc[3], "Showed", f"{cur_showed:,}", "consultation attended",
-                      _delta_md(cur_showed, p_showed, higher_is_better=True, fmt="pct"))
-        _e1_scorecard(kc[4], "Conversions", f"{n_conv:,}", "COE + POC · click for All/POC/COE",
+        _e1_scorecard(kc[2], "Conversions", f"{n_conv:,}", "COE + POC · click for All/POC/COE",
                       _delta_md(n_conv, p_conv, higher_is_better=True, fmt="pct"))
 
         # Blended cost per appointment = Meta ad spend ÷ ALL appointments booked
@@ -5893,8 +5907,8 @@ with tab_e1:
         kc2 = st.columns(5)
         _e1_scorecard(kc2[0], "Ad Spend", f"${spend_aud:,.0f}", f"Meta · AUD @ {fx:.2f}",
                       _delta_md(spend_aud, p_spend_aud, higher_is_better=True, fmt="pct"))
-        _e1_scorecard(kc2[1], "Leads to Booking", f"{ltb*100:.0f}%", f"{cur_booked:,} of {n_leads:,} leads",
-                      _delta_md(ltb, p_ltb, higher_is_better=True, fmt="pts"))
+        _e1_scorecard(kc2[1], "Bookings", f"{cur_booked:,}", f"{ltb*100:.0f}% of {n_leads:,} leads",
+                      _delta_md(cur_booked, p_booked, higher_is_better=True, fmt="pct"))
         _e1_scorecard(kc2[2], "Show Rate", f"{sr*100:.0f}%", f"{cur_showed:,} of {cur_booked:,} booked",
                       _delta_md(sr, p_sr, higher_is_better=True, fmt="pts"))
         _e1_scorecard(kc2[3], "Blended CPA", f"${blended_cpa:,.0f}" if blended_cpa else "—",
