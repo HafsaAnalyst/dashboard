@@ -5545,13 +5545,24 @@ with tab_e1:
                 .properties(height=290).configure_view(strokeWidth=0))
             st.altair_chart(ch, use_container_width=True)
 
-        def _src_filter_emails(df, key, sort_col="Appt Created Date"):
-            """Source checkboxes (multiselect) → filtered email list + download."""
-            opts = sorted(df["refined_source"].map(_src_group).dropna().unique().tolist())
-            sel = st.multiselect("Show sources (leave empty for all)", opts, key=f"e1msel_{key}")
-            fdf = df if not sel else df[df["refined_source"].map(_src_group).isin(sel)]
+        def _src_table_select(cols, key):
+            """Render the by-source Table 1 with row CHECKBOXES; return the list of
+            ticked Source names (empty = none ticked)."""
+            disp = _fmt_summary(cols)
+            sel = st.dataframe(disp, hide_index=True, use_container_width=True, height=300,
+                               on_select="rerun", selection_mode="multi-row", key=key)
+            try:
+                rows = (sel.selection.get("rows") if sel else None) or []
+                return [disp.iloc[int(i)]["Source"] for i in rows]
+            except Exception:
+                return []
+
+        def _emails_by_sources(df, chosen, key, label, sort_col="Appt Created Date"):
+            """Email list filtered to the ticked sources (all if none ticked)."""
+            fdf = df if not chosen else df[df["refined_source"].map(_src_group).isin(chosen)]
             tbl = _leads_emails(fdf).sort_values(sort_col, ascending=False)
-            st.markdown(f"**{len(tbl):,} contacts**")
+            _tag = f" · {', '.join(chosen)}" if chosen else " · all sources"
+            st.markdown(f"**{label} · {len(tbl):,} contacts{_tag}**")
             st.dataframe(tbl, hide_index=True, use_container_width=True, height=440)
             _dl(tbl, "Download (CSV)", key)
 
@@ -5743,25 +5754,22 @@ with tab_e1:
                     st.dataframe(qs, hide_index=True, use_container_width=True)
 
             elif card == "Bookings":
-                st.caption(f"**{cur_booked:,} bookings** · Lead→Booking rate "
-                           f"**{ltb*100:.0f}%** ({cur_booked:,} of {n_leads:,} leads)")
-                st.markdown("**Table 1 — by source (through booking rate)**")
-                st.dataframe(_fmt_summary(["Leads", "Booked", "Booking Rate"]),
-                             hide_index=True, use_container_width=True, height=300)
+                st.caption(f"Lead→Booking rate **{ltb*100:.0f}%** ({cur_booked:,} of {n_leads:,} leads)")
+                st.markdown("**Table 1 — by source** (tick rows to filter the contacts below)")
+                _chosen = _src_table_select(["Leads", "Booked", "Booking Rate"], "e1_bk_srctbl")
                 _src_bar(["Leads", "Booked"], ["#4DA6FF", "#2EAD8F"], "Leads vs Booked — by source")
                 _bs_trend()
-                st.markdown("**Booked contacts** — tick sources to filter")
-                _src_filter_emails(leads_df[leads_df["appt_booked"] == 1], "bookings")
+                _emails_by_sources(leads_df[leads_df["appt_booked"] == 1], _chosen,
+                                   "bookings", "Booked contacts")
 
             elif card == "Show Rate":
                 st.caption(f"Booking→Show rate **{sr*100:.0f}%** ({cur_showed:,} of {cur_booked:,} booked)")
-                st.markdown("**Table 1 — by source (through show rate)**")
-                st.dataframe(_fmt_summary(["Booked", "Showed", "Show Rate"]),
-                             hide_index=True, use_container_width=True, height=300)
+                st.markdown("**Table 1 — by source** (tick rows to filter the contacts below)")
+                _chosen = _src_table_select(["Booked", "Showed", "Show Rate"], "e1_sr_srctbl")
                 _src_bar(["Booked", "Showed"], ["#2EAD8F", "#7A52CC"], "Booked vs Showed — by source")
                 _bs_trend()
-                st.markdown("**Showed contacts** — tick sources to filter")
-                _src_filter_emails(leads_df[leads_df["appt_showed"] == 1], "showrate")
+                _emails_by_sources(leads_df[leads_df["appt_showed"] == 1], _chosen,
+                                   "showrate", "Showed contacts")
 
             elif card == "Conversions":
                 st.caption("**COE** = COE / Initial Received or Won in L2C-Education / "
@@ -5907,8 +5915,8 @@ with tab_e1:
         kc2 = st.columns(5)
         _e1_scorecard(kc2[0], "Ad Spend", f"${spend_aud:,.0f}", f"Meta · AUD @ {fx:.2f}",
                       _delta_md(spend_aud, p_spend_aud, higher_is_better=True, fmt="pct"))
-        _e1_scorecard(kc2[1], "Bookings", f"{cur_booked:,}", f"{ltb*100:.0f}% of {n_leads:,} leads",
-                      _delta_md(cur_booked, p_booked, higher_is_better=True, fmt="pct"))
+        _e1_scorecard(kc2[1], "Bookings", f"{ltb*100:.0f}%", f"{cur_booked:,} of {n_leads:,} leads",
+                      _delta_md(ltb, p_ltb, higher_is_better=True, fmt="pts"))
         _e1_scorecard(kc2[2], "Show Rate", f"{sr*100:.0f}%", f"{cur_showed:,} of {cur_booked:,} booked",
                       _delta_md(sr, p_sr, higher_is_better=True, fmt="pts"))
         _e1_scorecard(kc2[3], "Blended CPA", f"${blended_cpa:,.0f}" if blended_cpa else "—",
