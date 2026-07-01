@@ -7004,12 +7004,27 @@ if _active_tab == "WBR":
     if not e1.empty:
         e1 = e1[~e1["refined_source"].isin(["No Activity", "Queries"])].copy()
 
-    # campaign → ad account (Melbourne / Sydney) from the warehouse
-    _cm = db_exec("SELECT DISTINCT campaign_name, account_label FROM fact_meta_daily "
-                  "WHERE campaign_name IS NOT NULL").fetchdf()
-    def _nk(s):
-        return _wre.sub(r"[^a-z0-9]", "", str(s).lower())
-    _c2a = {_nk(r.campaign_name): r.account_label for r in _cm.itertuples()}
+    # campaign → ad account (Melbourne / Sydney) — SAME resolution as the Meta Ads
+    # tab so WBR "Leads" reconcile with the Meta tab's GHL-leads-by-account:
+    # normalise the campaign the same way, then warehouse (daily + insights) → full
+    # live campaign list.
+    def _ckey(s):
+        s = str(s or "").lower()
+        for a, b in (("%7c", "|"), ("%2f", "/"), ("%2b", "+"), ("%20", " "),
+                     ("%26", "&"), ("+", " ")):
+            s = s.replace(a, b)
+        return _wre.sub(r"[^a-z0-9]", "", s)
+    _cc = db_exec(
+        "SELECT DISTINCT campaign_name, account_label FROM ("
+        "  SELECT campaign_name, account_label FROM fact_meta_daily "
+        "  UNION ALL SELECT campaign_name, account_label FROM fact_meta_insights) "
+        "WHERE COALESCE(campaign_name,'') <> ''").fetchall()
+    _c2a = {_ckey(n): lbl for n, lbl in _cc if lbl}
+    try:
+        for _k, _lbl in fetch_meta_campaign_accounts().items():
+            _c2a.setdefault(_k, _lbl)   # full live campaign list (same key scheme)
+    except Exception:
+        pass
 
     if _md.empty and e1.empty:
         st.info("No WBR data available in this range.")
@@ -7033,7 +7048,7 @@ if _active_tab == "WBR":
               pd.DataFrame(columns=["_l", "account", "spend", "impr", "link_clicks", "msg"]))
         paid = e1[e1["refined_source"] == "Paid Social"].copy() if not e1.empty else pd.DataFrame()
         if not paid.empty:
-            paid["account"] = paid["campaign"].map(lambda c: _c2a.get(_nk(c)))
+            paid["account"] = paid["campaign"].map(lambda c: _c2a.get(_ckey(c)))
             pg = (paid.dropna(subset=["account"]).groupby(["_l", "account"]).agg(
                     leads=("contact_id", "count"), booked=("appt_booked", "sum"),
                     showed=("appt_showed", "sum")).reset_index())
