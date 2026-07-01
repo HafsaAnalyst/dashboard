@@ -7000,9 +7000,11 @@ if _active_tab == "WBR":
     fx = usd_to_aud()
     _mstr, _ustr = _wstart.isoformat(), _last_sun.isoformat()
     _md = wbr_meta_daily(_mstr, _ustr)
+    # Keep ALL sources (incl. Queries / No Activity) — they route to Organic "Others"
+    # for leads, and every real in-range appointment's contact lives here (the view's
+    # cohort includes anyone who BOOKED in the window) so we can label appointments by
+    # source without a second query.
     e1 = run_df("vw_exec1_lead_detail", {"since": _mstr, "until": _ustr, "city": "All"})
-    if not e1.empty:
-        e1 = e1[~e1["refined_source"].isin(["No Activity", "Queries"])].copy()
 
     # campaign → ad account (Melbourne / Sydney) — SAME resolution as the Meta Ads
     # tab so WBR "Leads" reconcile with the Meta tab's GHL-leads-by-account:
@@ -7040,20 +7042,76 @@ if _active_tab == "WBR":
             _pairs += list(zip(e1["_k"], e1["_l"]))
         _cols = [l for _, l in sorted(set(_pairs))]
 
+        # ---- counsellor labels + reconciled appointment set (activity, by source) ----
+        # Booked / Showed everywhere below come from the ACTUAL appointments booked in
+        # the week, each labelled by its contact's source (via e1) and — for Paid Social
+        # — routed to the ad account by campaign. Inner-join to e1 drops test/staff
+        # (@themigration, insta bots) and no-contact appointments. So Meta booked +
+        # Organic booked == the counsellor-table total == real appointment count.
+        def _svc(nm):
+            if "Navneet Kaur" in nm:            # override: runs free education consults
+                return "education"
+            if "MARA" in nm:
+                return "visa"
+            if "Career Counsellor" in nm:
+                return "career"
+            if "Education" in nm:
+                return "education"
+            return "education"
+        _clbl = {c["name"]: f"{c['name'].split(' - ')[0].split()[0]} ({_svc(c['name'])})"
+                 for c in COUNSELLORS}
+        _cid2lbl = {cid: _clbl[c["name"]] for c in COUNSELLORS for cid in c["calendar_ids"]}
+        _CROWS = ["Gurbir (visa)", "Nasir (visa)", "Turab (career)", "Kajal (education)",
+                  "Navneet (education)", "Saurab (education)", "Wajahad (education)"]
+        _cids = [cid for c in COUNSELLORS for cid in c["calendar_ids"]]
+        _ph = ",".join(["?"] * len(_cids))
+        _apq = db_exec(
+            f"SELECT contact_id, calendar_id, "
+            f"CAST(date_added + INTERVAL 10 HOUR AS DATE) AS d, canonical_outcome "
+            f"FROM fact_appointments "
+            f"WHERE LOWER(COALESCE(appointment_status,'')) <> 'invalid' "
+            f"AND calendar_id IN ({_ph}) "
+            f"AND CAST(date_added + INTERVAL 10 HOUR AS DATE) BETWEEN ? AND ?",
+            _cids + [_mstr, _ustr]).fetchdf()
+        if not _apq.empty and not e1.empty:
+            apx = _apq.merge(e1[["contact_id", "refined_source", "campaign"]],
+                             on="contact_id", how="inner").copy()
+        else:
+            apx = pd.DataFrame(columns=["contact_id", "calendar_id", "d", "canonical_outcome",
+                                        "refined_source", "campaign"])
+        if not apx.empty:
+            apx["_l"] = apx["d"].map(lambda x: _pk(x)[1])
+            apx["showed"] = apx["canonical_outcome"].astype(str).str.lower().eq("show")
+            apx["couns"] = apx["calendar_id"].map(_cid2lbl)
+            apx["account"] = apx.apply(
+                lambda r: _c2a.get(_ckey(r["campaign"]))
+                if r["refined_source"] == "Paid Social" else None, axis=1)
+            apx["is_meta"] = (apx["refined_source"].eq("Paid Social")
+                              & apx["account"].isin(["Melbourne", "Sydney"]))
+        else:
+            for _c in ("_l", "showed", "couns", "account"):
+                apx[_c] = pd.Series(dtype=object)
+            apx["is_meta"] = pd.Series(dtype=bool)
+
         # ---- aggregates ----
         mg = (_md.groupby(["_l", "account"]).agg(
                   spend=("spend", "sum"), impr=("impr", "sum"),
                   link_clicks=("link_clicks", "sum"), msg=("msg", "sum")).reset_index()
               if not _md.empty else
               pd.DataFrame(columns=["_l", "account", "spend", "impr", "link_clicks", "msg"]))
+        # Paid-Social LEADS by account/week (cohort — new leads that week).
         paid = e1[e1["refined_source"] == "Paid Social"].copy() if not e1.empty else pd.DataFrame()
         if not paid.empty:
             paid["account"] = paid["campaign"].map(lambda c: _c2a.get(_ckey(c)))
-            pg = (paid.dropna(subset=["account"]).groupby(["_l", "account"]).agg(
-                    leads=("contact_id", "count"), booked=("appt_booked", "sum"),
-                    showed=("appt_showed", "sum")).reset_index())
+            pg = (paid.dropna(subset=["account"]).groupby(["_l", "account"])
+                    .agg(leads=("contact_id", "count")).reset_index())
         else:
-            pg = pd.DataFrame(columns=["_l", "account", "leads", "booked", "showed"])
+            pg = pd.DataFrame(columns=["_l", "account", "leads"])
+        # Meta BOOKED / SHOWED by account/week (activity — appointments routed to account).
+        _apm = apx[apx["is_meta"]] if not apx.empty else apx
+        pgb = (_apm.groupby(["_l", "account"]).agg(
+                   booked=("contact_id", "count"), showed=("showed", "sum")).reset_index()
+               if not _apm.empty else pd.DataFrame(columns=["_l", "account", "booked", "showed"]))
 
         _MET = ["Total Spend (AUD)", "Link Clicks", "Cost Per Link Click", "CPM",
                 "Messaging Conv. Started", "Leads", "CPL", "Appointment Booked", "Showed",
@@ -7062,9 +7120,10 @@ if _active_tab == "WBR":
         def _pm_val(pl, acct, met):
             m = mg[(mg["_l"] == pl) & (mg["account"] == acct)]
             p = pg[(pg["_l"] == pl) & (pg["account"] == acct)]
+            b = pgb[(pgb["_l"] == pl) & (pgb["account"] == acct)]
             sp = float(m["spend"].sum()) * fx
             impr = int(m["impr"].sum()); lclk = int(m["link_clicks"].sum()); msg = int(m["msg"].sum())
-            lds = int(p["leads"].sum()); bk = int(p["booked"].sum()); sh = int(p["showed"].sum())
+            lds = int(p["leads"].sum()); bk = int(b["booked"].sum()); sh = int(b["showed"].sum())
             return {
                 "Total Spend (AUD)": sp, "Link Clicks": lclk,
                 "Cost Per Link Click": (sp / lclk if lclk else None),
@@ -7086,8 +7145,10 @@ if _active_tab == "WBR":
         st.dataframe(_pm, use_container_width=True, height=460)
         st.caption("Spend / Link Clicks / CPM / Messaging from **Meta** (per ad account, USD→AUD "
                    f"@ {fx:.2f}). **Leads** = Paid-Social leads mapped to the account via their "
-                   "campaign · CPL = Spend ÷ Leads · **Appointment Booked / Showed** = those leads' "
-                   "bookings · Cost Per Appt = Spend ÷ Booked · Booking→Show = Showed ÷ Booked.")
+                   "campaign (new leads that week) · CPL = Spend ÷ Leads · **Appointment Booked / "
+                   "Showed** = actual appointments *booked* that week whose lead is Paid-Social, "
+                   "routed to the account · Cost Per Appt = Spend ÷ Booked · Booking→Show = "
+                   "Showed ÷ Booked.")
 
         # ---- Organic Leads (combined Melbourne + Sydney) ----
         st.markdown("#### 🌱 Organic Leads — combined (Melbourne + Sydney)")
@@ -7096,6 +7157,11 @@ if _active_tab == "WBR":
         org = e1[e1["refined_source"] != "Paid Social"].copy() if not e1.empty else pd.DataFrame()
         if not org.empty:
             org["src"] = org["refined_source"].map(lambda s: _SRC.get(s, "Others"))
+        # Organic BOOKED / SHOWED = actual appointments that are NOT Meta-attributed
+        # (all non-Paid-Social sources + Queries/No-Activity + any unmapped Paid Social).
+        _aorg = apx[~apx["is_meta"]] if not apx.empty else apx
+        _og = (_aorg.groupby("_l").agg(booked=("contact_id", "count"), showed=("showed", "sum"))
+               if not _aorg.empty else pd.DataFrame(columns=["booked", "showed"]))
         _SRCROWS = ["Referrals", "Direct", "Organic Search", "Social Media", "Walk-in", "Others"]
         _OROWS = _SRCROWS + ["Organic Total Leads", "Appointment Booked", "Showed", "Booking → Show rate"]
         _org = pd.DataFrame(index=_OROWS, columns=_cols, dtype=object)
@@ -7105,72 +7171,29 @@ if _active_tab == "WBR":
             for s in _SRCROWS:
                 n = int((sub["src"] == s).sum()) if not org.empty and not sub.empty else 0
                 _org.loc[s, pl] = n; tot += n
-            bk = int(sub["appt_booked"].sum()) if not org.empty and not sub.empty else 0
-            sh = int(sub["appt_showed"].sum()) if not org.empty and not sub.empty else 0
+            bk = int(_og.loc[pl, "booked"]) if pl in _og.index else 0
+            sh = int(_og.loc[pl, "showed"]) if pl in _og.index else 0
             _org.loc["Organic Total Leads", pl] = tot
             _org.loc["Appointment Booked", pl] = bk
             _org.loc["Showed", pl] = sh
             _org.loc["Booking → Show rate", pl] = (f"{sh / bk * 100:.0f}%" if bk else "—")
         st.dataframe(_org, use_container_width=True, height=400)
         st.caption("Organic = every non-Paid-Social lead (both offices combined), by source, from "
-                   "GHL. **Booking → Show rate** = Showed ÷ Appointment Booked for organic leads.")
+                   "GHL — **Queries & No Activity** count in **Others**. **Appointment Booked / "
+                   "Showed** = actual appointments booked that week for non-Paid-Social leads. "
+                   "**Booking → Show rate** = Showed ÷ Appointment Booked.")
 
         # ---- Bookings — by counsellor (labelled with their service) ----
+        # Same reconciled appointment set (apx) sliced by counsellor. Column totals
+        # equal Meta booked + Organic booked above.
         st.markdown("#### 🗓️ Bookings — by counsellor")
-
-        def _svc(nm):
-            if "Navneet Kaur" in nm:            # override: runs free education consults
-                return "education"
-            if "MARA" in nm:
-                return "visa"
-            if "Career Counsellor" in nm:
-                return "career"
-            if "Education" in nm:
-                return "education"
-            return "education"
-        _clbl = {c["name"]: f"{c['name'].split(' - ')[0].split()[0]} ({_svc(c['name'])})"
-                 for c in COUNSELLORS}
-        _cid2lbl = {cid: _clbl[c["name"]] for c in COUNSELLORS for cid in c["calendar_ids"]}
-        _CROWS = ["Gurbir (visa)", "Nasir (visa)", "Turab (career)", "Kajal (education)",
-                  "Navneet (education)", "Saurab (education)", "Wajahad (education)"]
-        _dcm = dict(db_exec("SELECT calendar_id, calendar_name FROM dim_calendars").fetchall())
-        _calname2lbl = {_dcm[cid]: lbl for cid, lbl in _cid2lbl.items() if cid in _dcm}
-
-        # A — cohort: booked Meta + Organic leads, counted in the LEAD's week
-        st.markdown("**A · From Meta + Organic leads** — a booked lead counts in the week the "
-                    "lead arrived (same cohort as the tables above)")
-        if not e1.empty and int((e1["appt_booked"] == 1).sum()) > 0:
-            _bk = e1[e1["appt_booked"] == 1].copy()
-            _bk["couns"] = _bk["calendar_name"].map(lambda n: _calname2lbl.get(n, "Other"))
-            _ta = (_bk.groupby(["couns", "_l"]).size().unstack("_l", fill_value=0)
-                   .reindex(index=_CROWS + ["Other"], columns=_cols, fill_value=0))
-            if int(_ta.loc["Other"].sum()) == 0:
-                _ta = _ta.drop(index="Other")
-            st.dataframe(_ta, use_container_width=True, height=330)
-        else:
-            st.caption("No booked Meta/Organic leads in range.")
-
-        # B — activity: ALL appointments on these calendars, counted in the week booked
-        st.markdown("**B · All appointments booked** — every appointment on these calendars, "
-                    "counted in the week the **appointment was booked** (activity)")
-        _cids = [cid for c in COUNSELLORS for cid in c["calendar_ids"]]
-        _ph = ",".join(["?"] * len(_cids))
-        _ap = db_exec(
-            f"SELECT calendar_id, CAST(date_added + INTERVAL 10 HOUR AS DATE) AS d "
-            f"FROM fact_appointments "
-            f"WHERE LOWER(COALESCE(appointment_status,'')) <> 'invalid' "
-            f"AND calendar_id IN ({_ph}) "
-            f"AND CAST(date_added + INTERVAL 10 HOUR AS DATE) BETWEEN ? AND ?",
-            _cids + [_mstr, _ustr]).fetchdf()
-        if not _ap.empty:
-            _ap["couns"] = _ap["calendar_id"].map(_cid2lbl)
-            _ap["_l"] = _ap["d"].map(lambda x: _pk(x)[1])
-            _tb = (_ap.groupby(["couns", "_l"]).size().unstack("_l", fill_value=0)
+        if not apx.empty:
+            _tc = (apx.groupby(["couns", "_l"]).size().unstack("_l", fill_value=0)
                    .reindex(index=_CROWS, columns=_cols, fill_value=0))
-            st.dataframe(_tb, use_container_width=True, height=330)
+            st.dataframe(_tc, use_container_width=True, height=330)
         else:
             st.caption("No appointments in range.")
-        st.caption("Counsellor label = service (**visa** = MARA · **career** · **education**). "
-                   "**A** counts a booking in the week its lead arrived (cohort, matches the rows "
-                   "above); **B** counts every appointment in the week it was booked (activity). "
-                   "Tell me which matches your WBR sheet and I'll keep that one.")
+        st.caption("Every appointment booked in the week (test/staff excluded), grouped by the "
+                   "counsellor who owns its calendar — label = service (**visa** = MARA · "
+                   "**career** · **education**). Column totals reconcile with **Meta Appointment "
+                   "Booked + Organic Appointment Booked** above.")
