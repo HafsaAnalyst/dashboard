@@ -874,18 +874,19 @@ except Exception as _dberr:
 # Tabs — Executive active, others placeholder
 # ---------------------------------------------------------------------
 
-(tab_e1, tab_meta1, tab_funnels1, tab_couns, tab_seo,
- tab_fc, tab_up, tab_follower) = st.tabs([
-    "Executive", "Meta Ads", "Funnels",
-    "Counsellors", "SEO & Traffic", "Forecast & Goals", "Upload Reports",
-    "Follower Performance",
-])
+# Lazy tabs: a segmented control drives which ONE tab renders, so only the
+# selected tab runs its (expensive) MotherDuck queries — not all 8 every rerun.
+_TAB_NAMES = ["Executive", "Meta Ads", "Funnels", "Counsellors", "SEO & Traffic",
+              "Forecast & Goals", "Upload Reports", "Follower Performance"]
+_active_tab = st.segmented_control(
+    "Tabs", _TAB_NAMES, default="Executive", key="active_tab",
+    label_visibility="collapsed") or "Executive"
 
 # =====================================================================
 # COUNSELLORS TAB
 # =====================================================================
 
-with tab_couns:
+if _active_tab == "Counsellors":
     # Counsellor tab uses appointment.start_time (when meeting is scheduled)
     # for date filtering — matches GHL's calendar view directly.
     # Layout mirrors Meta Ads / SEO tabs:
@@ -4013,7 +4014,7 @@ def render_meta1_tab():
             "contact in the calendar, so it isn't restricted to the selected duration.")
 
 
-with tab_meta1:
+if _active_tab == "Meta Ads":
     render_meta1_tab()
 
 
@@ -4021,7 +4022,7 @@ with tab_meta1:
 # SEO & TRAFFIC TAB
 # =====================================================================
 
-with tab_seo:
+if _active_tab == "SEO & Traffic":
     # Re-inject card CSS so buttons in this tab render as card-style scorecards
     # (same look as the Meta Ads tab — CSS is identical, kept local to ensure
     # it's applied regardless of which tab Streamlit renders first).
@@ -4897,7 +4898,7 @@ Every scorecard shows `▲/▼ X% vs last` against the **prior equal-length wind
 # COE goal tracking. Metrics are computed from the lead cohort (who came in
 # the period), appointments created in the period, and Meta spend.
 
-with tab_fc:
+if _active_tab == "Forecast & Goals":
     st.markdown("### Forecast & Goals")
 
     g1, g2, g3, _g4 = st.columns([2, 2, 2, 2])
@@ -5154,7 +5155,7 @@ with tab_fc:
 # UPLOAD REPORTS TAB — Lead Journey: days-in-stage matrix
 # =====================================================================
 
-with tab_up:
+if _active_tab == "Upload Reports":
     import altair as alt
 
     st.markdown("### Upload & Compare Reports")
@@ -5251,7 +5252,7 @@ with tab_up:
 # EXECUTIVE_1 TAB — Leads (created OR revived) by REFINED source,
 # clickable to the contact-level detail.
 # =====================================================================
-with tab_e1:
+if _active_tab == "Executive":
     st.markdown(
         "<div class='panel-title'>Executive_1 — Leads by source"
         "<span class='hint'>created or revived in the selected range</span></div>",
@@ -6231,7 +6232,7 @@ with tab_e1:
 # =====================================================================
 # FUNNELS_1 TAB — contacts created · opportunities (+status) · paid consults
 # =====================================================================
-with tab_funnels1:
+if _active_tab == "Funnels":
     st.markdown(
         "<div class='panel-title'>Funnels_1 — contacts · opportunities · paid consultations"
         "<span class='hint'>selected range (AEST)</span></div>", unsafe_allow_html=True)
@@ -6686,7 +6687,7 @@ with tab_funnels1:
 # =====================================================================
 # FOLLOWER PERFORMANCE TAB — presales agents (GHL opportunity "followers")
 # =====================================================================
-with tab_follower:
+if _active_tab == "Follower Performance":
     st.markdown(
         "<div class='panel-title'>Follower Performance"
         "<span class='hint'>employee activity by point-in-time stage</span></div>",
