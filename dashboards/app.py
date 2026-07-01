@@ -7114,3 +7114,63 @@ if _active_tab == "WBR":
         st.dataframe(_org, use_container_width=True, height=400)
         st.caption("Organic = every non-Paid-Social lead (both offices combined), by source, from "
                    "GHL. **Booking → Show rate** = Showed ÷ Appointment Booked for organic leads.")
+
+        # ---- Bookings — by counsellor (labelled with their service) ----
+        st.markdown("#### 🗓️ Bookings — by counsellor")
+
+        def _svc(nm):
+            if "Navneet Kaur" in nm:            # override: runs free education consults
+                return "education"
+            if "MARA" in nm:
+                return "visa"
+            if "Career Counsellor" in nm:
+                return "career"
+            if "Education" in nm:
+                return "education"
+            return "education"
+        _clbl = {c["name"]: f"{c['name'].split(' - ')[0].split()[0]} ({_svc(c['name'])})"
+                 for c in COUNSELLORS}
+        _cid2lbl = {cid: _clbl[c["name"]] for c in COUNSELLORS for cid in c["calendar_ids"]}
+        _CROWS = ["Gurbir (visa)", "Nasir (visa)", "Turab (career)", "Kajal (education)",
+                  "Navneet (education)", "Saurab (education)", "Wajahad (education)"]
+        _dcm = dict(db_exec("SELECT calendar_id, calendar_name FROM dim_calendars").fetchall())
+        _calname2lbl = {_dcm[cid]: lbl for cid, lbl in _cid2lbl.items() if cid in _dcm}
+
+        # A — cohort: booked Meta + Organic leads, counted in the LEAD's week
+        st.markdown("**A · From Meta + Organic leads** — a booked lead counts in the week the "
+                    "lead arrived (same cohort as the tables above)")
+        if not e1.empty and int((e1["appt_booked"] == 1).sum()) > 0:
+            _bk = e1[e1["appt_booked"] == 1].copy()
+            _bk["couns"] = _bk["calendar_name"].map(lambda n: _calname2lbl.get(n, "Other"))
+            _ta = (_bk.groupby(["couns", "_l"]).size().unstack("_l", fill_value=0)
+                   .reindex(index=_CROWS + ["Other"], columns=_cols, fill_value=0))
+            if int(_ta.loc["Other"].sum()) == 0:
+                _ta = _ta.drop(index="Other")
+            st.dataframe(_ta, use_container_width=True, height=330)
+        else:
+            st.caption("No booked Meta/Organic leads in range.")
+
+        # B — activity: ALL appointments on these calendars, counted in the week booked
+        st.markdown("**B · All appointments booked** — every appointment on these calendars, "
+                    "counted in the week the **appointment was booked** (activity)")
+        _cids = [cid for c in COUNSELLORS for cid in c["calendar_ids"]]
+        _ph = ",".join(["?"] * len(_cids))
+        _ap = db_exec(
+            f"SELECT calendar_id, CAST(date_added + INTERVAL 10 HOUR AS DATE) AS d "
+            f"FROM fact_appointments "
+            f"WHERE LOWER(COALESCE(appointment_status,'')) <> 'invalid' "
+            f"AND calendar_id IN ({_ph}) "
+            f"AND CAST(date_added + INTERVAL 10 HOUR AS DATE) BETWEEN ? AND ?",
+            _cids + [_mstr, _ustr]).fetchdf()
+        if not _ap.empty:
+            _ap["couns"] = _ap["calendar_id"].map(_cid2lbl)
+            _ap["_l"] = _ap["d"].map(lambda x: _pk(x)[1])
+            _tb = (_ap.groupby(["couns", "_l"]).size().unstack("_l", fill_value=0)
+                   .reindex(index=_CROWS, columns=_cols, fill_value=0))
+            st.dataframe(_tb, use_container_width=True, height=330)
+        else:
+            st.caption("No appointments in range.")
+        st.caption("Counsellor label = service (**visa** = MARA · **career** · **education**). "
+                   "**A** counts a booking in the week its lead arrived (cohort, matches the rows "
+                   "above); **B** counts every appointment in the week it was booked (activity). "
+                   "Tell me which matches your WBR sheet and I'll keep that one.")
