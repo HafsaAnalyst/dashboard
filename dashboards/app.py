@@ -61,6 +61,46 @@ def usd_to_aud() -> float:
     return rate
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def wbr_meta_daily(since: str, until: str) -> "pd.DataFrame":
+    """Account-level DAILY Meta insights (Melbourne + Sydney) for the WBR tab —
+    spend, impressions, clicks, link clicks and messaging-conversations-started per
+    day per account. Pulled live (the warehouse only stores daily spend/impr/clicks,
+    not link-clicks/messaging) with time_increment=1 → one call per account. Cached
+    30 min. Returns empty DataFrame on failure."""
+    import os as _os, json as _json
+    import requests as _rq
+    tok = _os.getenv("META_ACCESS_TOKEN")
+    base = "https://graph.facebook.com/v19.0"
+    rows = []
+    for label, env in (("Melbourne", "META_MELBOURNE_AD_ACCOUNT_ID"),
+                        ("Sydney", "META_SYDNEY_AD_ACCOUNT_ID")):
+        acct = _os.getenv(env)
+        if not acct or not tok:
+            continue
+        try:
+            r = _rq.get(f"{base}/{acct}/insights", timeout=90, params={
+                "access_token": tok, "level": "account", "time_increment": 1,
+                "time_range": _json.dumps({"since": since, "until": until}),
+                "fields": "date_start,spend,impressions,clicks,inline_link_clicks,actions",
+                "limit": 500})
+            for x in r.json().get("data", []):
+                acts = {a.get("action_type"): float(a.get("value") or 0)
+                        for a in (x.get("actions") or []) if a.get("action_type")}
+                rows.append({
+                    "date": x.get("date_start"), "account": label,
+                    "spend": float(x.get("spend") or 0),
+                    "impr": int(float(x.get("impressions") or 0)),
+                    "clicks": int(float(x.get("clicks") or 0)),
+                    "link_clicks": int(float(x.get("inline_link_clicks") or 0)),
+                    "msg": int(acts.get("onsite_conversion.messaging_conversation_started_7d", 0)),
+                })
+        except Exception:
+            continue
+    return pd.DataFrame(rows, columns=["date", "account", "spend", "impr",
+                                       "clicks", "link_clicks", "msg"])
+
+
 def _coe_ground_truth_emails() -> set:
     """Lowercased emails from data/coe_received_ground_truth.csv — the Marketing
     Lead's verified COE-Received list. Cached per session; empty set if missing."""
@@ -877,7 +917,7 @@ except Exception as _dberr:
 # Lazy tabs: a segmented control drives which ONE tab renders, so only the
 # selected tab runs its (expensive) MotherDuck queries — not all 8 every rerun.
 _TAB_NAMES = ["Executive", "Meta Ads", "Funnels", "Counsellors", "SEO & Traffic",
-              "Forecast & Goals", "Upload Reports", "Follower Performance"]
+              "Forecast & Goals", "Upload Reports", "Follower Performance", "WBR"]
 _active_tab = st.segmented_control(
     "Tabs", _TAB_NAMES, default="Executive", key="active_tab",
     label_visibility="collapsed") or "Executive"
@@ -6909,3 +6949,153 @@ if _active_tab == "Follower Performance":
                 st.caption(f"{len(out):,} lead-days **{pick}** performed an outbound activity on. "
                            "Stage That Day = the stage the lead was in on that activity date. "
                            "Source = same refined-source logic as the Executive tab.")
+
+
+# =====================================================================
+# WBR — Weekly Business Review (independent of the global date filter)
+# =====================================================================
+if _active_tab == "WBR":
+    from datetime import date as _wdate, timedelta as _wtd
+    import re as _wre
+    st.markdown("<div class='panel-title'>WBR — Weekly Business Review"
+                "<span class='hint'>independent of the global filter · from March</span></div>",
+                unsafe_allow_html=True)
+
+    # Independent range: 2 Mar (first Monday) → most recent COMPLETED Sunday.
+    _wstart = _wdate(2026, 3, 2)
+    _tdy = _wdate.today()
+    _last_sun = _tdy - _wtd(days=((_tdy.weekday() + 1) % 7) or 7)   # last past Sunday
+    if _last_sun < _wstart:
+        _last_sun = _wstart
+
+    _gran = st.segmented_control("View", ["Yearly", "Quarterly", "Monthly", "Weekly"],
+                                 default="Weekly", key="wbr_gran") or "Weekly"
+    st.caption(f"Data from **{_wstart.strftime('%d %b %Y')}** to the last completed Sunday "
+               f"(**{_last_sun.strftime('%d %b %Y')}**). Weeks run Mon→Sun. Yearly / Quarterly "
+               "reflect only the data available so far (starts March).")
+
+    def _pk(d):
+        d = pd.Timestamp(d)
+        if _gran == "Weekly":
+            m = (d - pd.Timedelta(days=d.weekday())).normalize()
+            return (m, m.strftime("%d %b"))
+        if _gran == "Monthly":
+            return (pd.Timestamp(d.year, d.month, 1), d.strftime("%b %Y"))
+        if _gran == "Quarterly":
+            qm = 3 * ((d.month - 1) // 3) + 1
+            return (pd.Timestamp(d.year, qm, 1), f"Q{(d.month - 1)//3 + 1} {d.year}")
+        return (pd.Timestamp(d.year, 1, 1), str(d.year))
+
+    def _fmt(metric, v):
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return "—"
+        if metric == "Total Spend (AUD)":
+            return f"${v:,.0f}"
+        if metric in ("Cost Per Link Click", "CPM", "CPL", "Cost Per Appt Booked"):
+            return f"${v:,.2f}"
+        if metric == "Booking → Show rate":
+            return f"{v*100:.0f}%"
+        return f"{int(v):,}"
+
+    fx = usd_to_aud()
+    _mstr, _ustr = _wstart.isoformat(), _last_sun.isoformat()
+    _md = wbr_meta_daily(_mstr, _ustr)
+    e1 = run_df("vw_exec1_lead_detail", {"since": _mstr, "until": _ustr, "city": "All"})
+    if not e1.empty:
+        e1 = e1[~e1["refined_source"].isin(["No Activity", "Queries"])].copy()
+
+    # campaign → ad account (Melbourne / Sydney) from the warehouse
+    _cm = db_exec("SELECT DISTINCT campaign_name, account_label FROM fact_meta_daily "
+                  "WHERE campaign_name IS NOT NULL").fetchdf()
+    def _nk(s):
+        return _wre.sub(r"[^a-z0-9]", "", str(s).lower())
+    _c2a = {_nk(r.campaign_name): r.account_label for r in _cm.itertuples()}
+
+    if _md.empty and e1.empty:
+        st.info("No WBR data available in this range.")
+    else:
+        # ---- period columns (chronological) ----
+        _pairs = []
+        if not _md.empty:
+            _md = _md.copy()
+            _md["_k"], _md["_l"] = zip(*_md["date"].map(_pk))
+            _pairs += list(zip(_md["_k"], _md["_l"]))
+        if not e1.empty:
+            e1["_k"], e1["_l"] = zip(*e1["lead_date"].map(_pk))
+            _pairs += list(zip(e1["_k"], e1["_l"]))
+        _cols = [l for _, l in sorted(set(_pairs))]
+
+        # ---- aggregates ----
+        mg = (_md.groupby(["_l", "account"]).agg(
+                  spend=("spend", "sum"), impr=("impr", "sum"),
+                  link_clicks=("link_clicks", "sum"), msg=("msg", "sum")).reset_index()
+              if not _md.empty else
+              pd.DataFrame(columns=["_l", "account", "spend", "impr", "link_clicks", "msg"]))
+        paid = e1[e1["refined_source"] == "Paid Social"].copy() if not e1.empty else pd.DataFrame()
+        if not paid.empty:
+            paid["account"] = paid["campaign"].map(lambda c: _c2a.get(_nk(c)))
+            pg = (paid.dropna(subset=["account"]).groupby(["_l", "account"]).agg(
+                    leads=("contact_id", "count"), booked=("appt_booked", "sum"),
+                    showed=("appt_showed", "sum")).reset_index())
+        else:
+            pg = pd.DataFrame(columns=["_l", "account", "leads", "booked", "showed"])
+
+        _MET = ["Total Spend (AUD)", "Link Clicks", "Cost Per Link Click", "CPM",
+                "Messaging Conv. Started", "Leads", "CPL", "Appointment Booked", "Showed",
+                "Cost Per Appt Booked", "Booking → Show rate"]
+
+        def _pm_val(pl, acct, met):
+            m = mg[(mg["_l"] == pl) & (mg["account"] == acct)]
+            p = pg[(pg["_l"] == pl) & (pg["account"] == acct)]
+            sp = float(m["spend"].sum()) * fx
+            impr = int(m["impr"].sum()); lclk = int(m["link_clicks"].sum()); msg = int(m["msg"].sum())
+            lds = int(p["leads"].sum()); bk = int(p["booked"].sum()); sh = int(p["showed"].sum())
+            return {
+                "Total Spend (AUD)": sp, "Link Clicks": lclk,
+                "Cost Per Link Click": (sp / lclk if lclk else None),
+                "CPM": (sp / impr * 1000 if impr else None),
+                "Messaging Conv. Started": msg, "Leads": lds,
+                "CPL": (sp / lds if lds else None),
+                "Appointment Booked": bk, "Showed": sh,
+                "Cost Per Appt Booked": (sp / bk if bk else None),
+                "Booking → Show rate": (sh / bk if bk else None),
+            }[met]
+
+        st.markdown("#### 📣 Performance Marketing — by ad account (Melbourne / Sydney)")
+        _mcols = pd.MultiIndex.from_product([_cols, ["Melbourne", "Sydney"]])
+        _pm = pd.DataFrame(index=_MET, columns=_mcols, dtype=object)
+        for pl in _cols:
+            for loc in ("Melbourne", "Sydney"):
+                for met in _MET:
+                    _pm.loc[met, (pl, loc)] = _fmt(met, _pm_val(pl, loc, met))
+        st.dataframe(_pm, use_container_width=True, height=460)
+        st.caption("Spend / Link Clicks / CPM / Messaging from **Meta** (per ad account, USD→AUD "
+                   f"@ {fx:.2f}). **Leads** = Paid-Social leads mapped to the account via their "
+                   "campaign · CPL = Spend ÷ Leads · **Appointment Booked / Showed** = those leads' "
+                   "bookings · Cost Per Appt = Spend ÷ Booked · Booking→Show = Showed ÷ Booked.")
+
+        # ---- Organic Leads (combined Melbourne + Sydney) ----
+        st.markdown("#### 🌱 Organic Leads — combined (Melbourne + Sydney)")
+        _SRC = {"Referral": "Referrals", "Direct": "Direct", "Organic Search": "Organic Search",
+                "Social media": "Social Media", "Walk-in": "Walk-in"}
+        org = e1[e1["refined_source"] != "Paid Social"].copy() if not e1.empty else pd.DataFrame()
+        if not org.empty:
+            org["src"] = org["refined_source"].map(lambda s: _SRC.get(s, "Others"))
+        _SRCROWS = ["Referrals", "Direct", "Organic Search", "Social Media", "Walk-in", "Others"]
+        _OROWS = _SRCROWS + ["Organic Total Leads", "Appointment Booked", "Showed", "Booking → Show rate"]
+        _org = pd.DataFrame(index=_OROWS, columns=_cols, dtype=object)
+        for pl in _cols:
+            sub = org[org["_l"] == pl] if not org.empty else org
+            tot = 0
+            for s in _SRCROWS:
+                n = int((sub["src"] == s).sum()) if not org.empty and not sub.empty else 0
+                _org.loc[s, pl] = n; tot += n
+            bk = int(sub["appt_booked"].sum()) if not org.empty and not sub.empty else 0
+            sh = int(sub["appt_showed"].sum()) if not org.empty and not sub.empty else 0
+            _org.loc["Organic Total Leads", pl] = tot
+            _org.loc["Appointment Booked", pl] = bk
+            _org.loc["Showed", pl] = sh
+            _org.loc["Booking → Show rate", pl] = (f"{sh / bk * 100:.0f}%" if bk else "—")
+        st.dataframe(_org, use_container_width=True, height=400)
+        st.caption("Organic = every non-Paid-Social lead (both offices combined), by source, from "
+                   "GHL. **Booking → Show rate** = Showed ÷ Appointment Booked for organic leads.")
