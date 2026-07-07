@@ -3474,9 +3474,16 @@ def render_meta1_tab():
                 .fillna("—"))
 
     def _ps(df, cids, mkeys=None):
-        # Meta cohort = exactly Executive_1's Paid Social (the view now classifies
-        # utm_campaign-matched leads as Paid Social), so the two tabs match.
+        # Meta cohort = Paid Social leads that actually ARRIVED in the window — i.e.
+        # were CREATED or REVIVED here. A contact pulled into the window only because
+        # they booked an appointment here (is_created=0, is_revived=0, booked_in_range=1)
+        # is an OLDER lead (e.g. a March lead who booked last week) — counting it breaks
+        # the Leads → Booked → Showed funnel. Excluding it makes the funnel monotonic:
+        # appt_booked/appt_showed are gated to appt >= lead_date, so of THESE leads,
+        # Booked ≤ Leads and Showed ≤ Booked.
         d = df[df["refined_source"] == "Paid Social"].copy()
+        if not d.empty and {"is_created", "is_revived"} <= set(d.columns):
+            d = d[(d["is_created"] == 1) | (d["is_revived"] == 1)].copy()
         d["campaign"] = d["campaign"].fillna("(no campaign)").replace("", "(no campaign)")
         d["_k"] = d["campaign"].map(_ckey)
         d["is_conv"] = d["contact_id"].isin(cids).astype(int)
