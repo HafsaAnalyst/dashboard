@@ -1837,7 +1837,7 @@ clead AS (SELECT contact_id, lead_source FROM fact_contact_lead_source)
 SELECT * REPLACE (
     CASE WHEN refined_source IN ('Organic Search', 'Direct')
               AND (pipeline IS NULL OR stage IS NULL)
-              AND NOT is_gbp
+              AND NOT is_google_organic
          THEN 'No Activity' ELSE refined_source END AS refined_source,
     -- Only count an appointment as this lead's Booking/Showed if it was created
     -- ON OR AFTER the lead entered the cohort. An appointment created BEFORE the
@@ -1920,14 +1920,17 @@ SELECT
                      '%7C','|'),'%2F','/'),'%2B','+'),'%20',' '),'+',' '), ''),
                  NULLIF(lcs.latest_source_campaign, ''))), '[^a-z0-9]', '', 'g')
              IN (SELECT ck FROM meta_ck)                                            THEN 'Paid Social'
-        -- Google Business Profile (utm_source=google, utm_medium=gbp,
-        -- utm_campaign=gbp_profile) is an ORGANIC Google listing/maps click —
-        -- classify as Organic Search, never Direct/Referral. Placed AFTER the paid
-        -- detections (so a genuine paid lead still wins) and BEFORE the event_source /
-        -- attribution Direct/Referral branches (so GBP beats them). Muhammad Fazal, e.g.,
-        -- has no form and would otherwise fall to first_attribution_source='Direct traffic'.
+        -- Google Business Profile / Google My Business / Google-organic clicks
+        -- (utm_source=google with utm_medium=gbp|gmb|organic, utm_campaign=gbp_profile|
+        -- gmb_consultation) are ORGANIC Google listing/maps clicks — classify as Organic
+        -- Search, never Direct/Referral. Placed AFTER the paid detections (so a genuine
+        -- paid lead still wins) and BEFORE the event_source / attribution Direct/Referral
+        -- branches. e.g. Muhammad Fazal (gbp_profile → else 'Direct traffic') and Dinesh
+        -- Sivasubramanium (gmb_consultation → else 'Referral').
         WHEN LOWER(COALESCE(ch.attribution_campaign,'')) LIKE 'gbp%'
-             OR LOWER(regexp_extract(ls.page_url,'utm_medium=([^&]+)',1)) = 'gbp'     THEN 'Organic Search'
+             OR LOWER(COALESCE(ch.attribution_campaign,'')) LIKE 'gmb%'
+             OR LOWER(regexp_extract(ls.page_url,'utm_medium=([^&]+)',1))
+                    IN ('gbp', 'gmb', 'organic')                                     THEN 'Organic Search'
         WHEN ls.event_source = 'Organic Search'                                     THEN 'Organic Search'
         WHEN ls.event_source = 'Referral' AND (
                  LOWER(regexp_extract(ls.page_url,'utm_source=([^&]+)',1))
@@ -2049,11 +2052,13 @@ SELECT
         NULLIF(lcs.latest_source_campaign, ''),
         NULLIF(ch.attribution_campaign, '')
     )                                                                      AS campaign,
-    -- Google Business Profile flag (same signal as the refined_source GBP branch)
+    -- Google organic flag (GBP/GMB/organic — same signal as the refined_source branch)
     -- so the outer 'Organic/Direct with no pipeline -> No Activity' downgrade never
-    -- demotes a genuine GBP lead (e.g. one who booked but has no opportunity yet).
+    -- demotes a genuine Google-organic lead (e.g. one who booked but has no opportunity).
     (LOWER(COALESCE(ch.attribution_campaign,'')) LIKE 'gbp%'
-     OR LOWER(regexp_extract(ls.page_url,'utm_medium=([^&]+)',1)) = 'gbp')  AS is_gbp,
+     OR LOWER(COALESCE(ch.attribution_campaign,'')) LIKE 'gmb%'
+     OR LOWER(regexp_extract(ls.page_url,'utm_medium=([^&]+)',1))
+            IN ('gbp', 'gmb', 'organic'))                                  AS is_google_organic,
     ls.form_name                                                           AS form_name,
     ch.visa_type                                                           AS visa
 FROM cohort ch
