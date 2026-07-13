@@ -1947,6 +1947,14 @@ SELECT
         WHEN ls.event_source = 'Referral'                                           THEN 'Referral'
         WHEN ls.event_source = 'Social media'                                       THEN 'Social media'
         WHEN ls.event_source IN ('Direct','Direct traffic')                         THEN 'Direct'
+        -- Walk-in = a walk-in-titled appointment (e.g. "Walk-in - New Lead"). A
+        -- physical walk-in IS the acquisition event, so it outranks the soft
+        -- follow-up signals below — a DM/WhatsApp conversation or a stale
+        -- contact-level attribution tag. It still yields to a genuine tracked
+        -- source ABOVE (a paid ad, a Google-organic tag, or an explicit web-form
+        -- event_source). e.g. Rana Imran (walk-in + WhatsApp follow-up, no form)
+        -- was wrongly classified 'Social media'.
+        WHEN wa.contact_id IS NOT NULL                                              THEN 'Walk-in'
         -- DM-channel leads (no form): only classify as a real source when we
         -- actually captured an EMAIL. A conversation with no email (no form
         -- filled) is an anonymous inquiry -> falls through to Queries.
@@ -1977,10 +1985,6 @@ SELECT
         WHEN LOWER(COALESCE(ch.latest_attribution_source,'')) = 'organic search'    THEN 'Organic Search'
         WHEN LOWER(COALESCE(ch.latest_attribution_source,'')) = 'social media'      THEN 'Social media'
         WHEN LOWER(COALESCE(ch.latest_attribution_source,'')) IN ('direct','direct traffic') THEN 'Direct'
-        -- Walk-in = any walk-in-titled appointment (e.g. "Walk-in - New Lead").
-        -- Highest priority among the booking/CRM sources — takes precedence over
-        -- Returning Client / Direct Bookings.
-        WHEN wa.contact_id IS NOT NULL                                              THEN 'Walk-in'
         -- Returning client = re-engaged after a prior service/opportunity that
         -- predates this window (e.g. an existing client who came back via DM).
         WHEN po.contact_id IS NOT NULL                                              THEN 'Returning Client'
