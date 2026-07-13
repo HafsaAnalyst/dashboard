@@ -5313,6 +5313,12 @@ if _active_tab == "Executive":
         # 'No Activity' = bare CRM records (no form/conversation/pipeline/appt/
         # payment) — never counted as leads. Drop them up front.
         e1 = e1[e1["refined_source"] != "No Activity"].copy()
+        # FUNNEL: a lead counts only if it actually ARRIVED in the window — created or
+        # revived here — NOT merely booked here (a March lead who books in July is not a
+        # July lead). Same rule as the Meta Ads tab, so Paid Leads matches Meta's LEADS
+        # scorecard. Queries (a separate anonymous-inquiry metric) keep their own count.
+        _q0 = e1["refined_source"] == "Queries"
+        e1 = e1[((e1["is_created"] == 1) | (e1["is_revived"] == 1)) | _q0].copy()
         q_mask = e1["refined_source"] == "Queries"
         leads_df = e1[~q_mask]
         n_leads = len(leads_df)
@@ -5328,6 +5334,9 @@ if _active_tab == "Executive":
         # ---- prior period (for the vs-last comparison) ----
         e1p = run_df("vw_exec1_lead_detail",
                      {"since": prior_since.isoformat(), "until": prior_until.isoformat()})
+        if not e1p.empty:   # same funnel rule for the vs-last comparison
+            _qp0 = e1p["refined_source"] == "Queries"
+            e1p = e1p[((e1p["is_created"] == 1) | (e1p["is_revived"] == 1)) | _qp0].copy()
         if e1p.empty:
             p_leads = p_queries = p_booked = p_showed = 0
         else:
