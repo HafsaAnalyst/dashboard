@@ -4476,6 +4476,22 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
             _seo_scorecard(cols[j], m.upper(), SEO_VAL[m], m,
                            f"sc{_ri // _per_row + 1}", SEO_DELTA.get(m, ""))
 
+    # GSC data lands 2-3 days late and the last few days keep maturing (revise
+    # upward), so the GSC cards trail the live Search Console UI. Show the last GSC
+    # day actually in the data so the gap reads as expected freshness, not a mismatch.
+    try:
+        _gsc_last = db_exec(
+            "SELECT MAX(date) FROM fact_gsc_queries WHERE dimension_name = 'device' "
+            "AND date BETWEEN ? AND ?",
+            [since.isoformat(), until.isoformat()]).fetchone()[0]
+    except Exception:
+        _gsc_last = None
+    if _gsc_last is not None:
+        _lag = (" · GSC lands 2–3 days late and the last few days keep maturing, so "
+                "these trail the live Search Console UI") if _gsc_last < until else ""
+        st.caption(f"📅 GSC Clicks / Impressions / Avg Position cover Search Console data "
+                   f"through **{_gsc_last:%d %b %Y}**{_lag}.")
+
     # ---- Melbourne + Sydney city cards (Website-Form lead funnel + chart) ----
     SEO_TREND_COL = {"Sessions": "sessions",
                      "GA4 Conv.": "ga4_conv", "GSC Clicks": "gsc_clicks",
