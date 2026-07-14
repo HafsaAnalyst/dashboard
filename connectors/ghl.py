@@ -304,6 +304,24 @@ def fetch_conversations(since: Optional[str] = None) -> list[dict]:
     return out
 
 
+def fetch_conversation_ids_for_contact(contact_id: str) -> list[str]:
+    """Conversation id(s) for ONE contact, via /conversations/search?contactId=.
+    Used to harvest opportunity stage-change activity for a contact whose stage
+    moved but who had NO recent chat message (so the incremental
+    fetch_conversations() skipped them — a stage move does not bump
+    lastMessageDate). Returns [] on any error so the caller can fall back."""
+    try:
+        r = requests.get(f"{BASE_URL}/conversations/search",
+                         headers=_headers(),
+                         params={"locationId": _location_id(), "contactId": contact_id},
+                         timeout=HTTP_TIMEOUT)
+        if r.status_code != 200:
+            return []
+        return [c["id"] for c in r.json().get("conversations", []) if c.get("id")]
+    except Exception:
+        return []
+
+
 def fetch_surveys() -> list[dict]:
     """All surveys defined in the GHL location. Returns id + name so we can
     map a survey-submission's surveyId to its name (e.g. 'Points Calculator')

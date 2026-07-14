@@ -301,6 +301,44 @@ def extract_ghl(con, since: str, until: str) -> dict:
         except Exception as e:
             logger.exception("GHL messages failed: %s", e)
 
+        # A stage move does NOT bump the conversation's lastMessageDate, so the
+        # incremental fetch above misses stage changes for contacts with no recent
+        # chat (e.g. an admin moves a lead to COE Received). Those moves live in the
+        # contact's conversation as TYPE_ACTIVITY_OPPORTUNITY logs. For every contact
+        # whose opp (in a reported pipeline) changed THIS run but whose conversation we
+        # did NOT already pull, harvest its messages so the stage timeline — and the
+        # COE/conversion counts derived from it — is complete.
+        try:
+            key_pipes = set(dim_pipe_df.loc[dim_pipe_df["pipeline_name"].isin(
+                ["L2C - Education", "CLT - Onshore Admission", "CLT - VISA"]),
+                "pipeline_id"]) if not dim_pipe_df.empty else set()
+            changed = (set(opps_df.loc[opps_df["pipeline_id"].isin(key_pipes),
+                                       "contact_id"].dropna())
+                       if not opps_df.empty and key_pipes else set())
+            done_conv = {c.get("id") for c in conv_raw if c.get("id")}
+            done_contacts = {c.get("contactId") for c in conv_raw if c.get("contactId")}
+            todo = [cid for cid in changed if cid and cid not in done_contacts]
+            extra_msgs = []
+            for cid in todo:
+                row = con.execute("SELECT conversation_id FROM fact_conversations "
+                                  "WHERE contact_id = ? LIMIT 1", [cid]).fetchone()
+                conv_ids = [row[0]] if row and row[0] else \
+                    ghl.fetch_conversation_ids_for_contact(cid)
+                for conv_id in conv_ids:
+                    if conv_id and conv_id not in done_conv:
+                        done_conv.add(conv_id)
+                        extra_msgs.extend(ghl.fetch_conversation_messages(conv_id))
+            n_extra = 0
+            if extra_msgs:
+                extra_stage_df = normalize.normalize_stage_events(extra_msgs)
+                upsert_df(con, "fact_opp_stage_events", extra_stage_df, "event_id")
+                n_extra = len(extra_stage_df)
+                summary["fact_opp_stage_events_extra"] = n_extra
+            logger.info("  changed-opp stage harvest: %d contacts, +%d events",
+                        len(todo), n_extra)
+        except Exception as e:
+            logger.exception("GHL changed-opp stage harvest failed: %s", e)
+
         return summary
     except Exception as e:
         logger.exception("GHL extract failed: %s", e)

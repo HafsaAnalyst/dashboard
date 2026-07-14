@@ -2111,34 +2111,63 @@ chan AS (
         FROM fact_conversations WHERE contact_id IS NOT NULL
     ) WHERE rn = 1
 ),
+ev AS (   -- stage-change events in the reported pipelines, with per-event stage_order
+    SELECT e.contact_id, e.opportunity_id, p.pipeline_name, e.new_stage,
+           st.stage_order, e.changed_at,
+           CAST(e.changed_at + INTERVAL 10 HOUR AS DATE) AS d
+    FROM fact_opp_stage_events e
+    JOIN dim_pipelines p ON p.pipeline_name = e.pipeline
+         AND p.pipeline_name IN ('L2C - Education', 'CLT - Onshore Admission', 'CLT - VISA')
+    JOIN dim_stages st ON st.pipeline_id = p.pipeline_id AND st.stage_name = e.new_stage
+    WHERE e.opportunity_id IS NOT NULL
+),
+ev_eod AS (   -- each opp's END-OF-DAY stage_order (last event by changed_at that day)
+    SELECT opportunity_id, d, arg_max(stage_order, changed_at) AS eod_order
+    FROM ev GROUP BY opportunity_id, d
+),
 conv AS (
-    -- COE = reached COE/Initial Received or Won in L2C-Education / CLT-Onshore;
-    -- POC = reached Application Submitted / Acknowledgment Sent + Doc or Won in
-    -- CLT - VISA. One row per contact PER TYPE (a contact can be both).
+    -- A conversion = the opp ENTERED its conversion stage during the window
+    -- (COE Received / Initial Received for L2C-Education & CLT-Onshore; Application
+    -- Submitted / Acknowledgment Sent + Doc for CLT-VISA) OR became Won — counted in
+    -- the month it ENTERED, so it stays counted even after the opp later moves on
+    -- (the current-stage-only logic dropped a COE the moment the opp progressed).
+    -- One row per contact PER TYPE.
     --
-    -- Dated by WHEN the opp ENTERED its conversion state (stage change into the
-    -- conversion stage, or status change to Won) — NOT updated_at. updated_at is
-    -- bumped by ANY later edit (e.g. booking an appointment after COE), which
-    -- mis-dated the COE into a later month and inflated the count (a COE reached
-    -- in March but touched in June was counted as a June COE).
+    -- Sources UNION'd: (A) stage-change events INTO a conversion stage (the durable
+    -- record — survives later moves), minus SAME-DAY REVERTS (an entry ignored when
+    -- the opp ended that AEST day BELOW the stage it entered — an accidental move
+    -- that was corrected); (B) Won status; (C) current stage IS a conversion stage
+    -- (fallback so nothing regresses before the event history is fully backfilled).
     SELECT contact_id, pipeline_name, stage_name, status, conv_type, changed_date
     FROM (
         SELECT contact_id, pipeline_name, stage_name, status, conv_type, changed_date,
                ROW_NUMBER() OVER (PARTITION BY contact_id, conv_type
-                                  ORDER BY changed_date DESC) AS rn
+                   ORDER BY changed_date DESC,
+                            CASE WHEN status IS NULL THEN 1 ELSE 0 END) AS rn
         FROM (
+            -- (A) entered a conversion stage (durable), minus same-day reverts
+            SELECT ev.contact_id, ev.pipeline_name, ev.new_stage AS stage_name, o.status,
+                   CASE WHEN ev.pipeline_name = 'CLT - VISA' THEN 'POC' ELSE 'COE' END AS conv_type,
+                   ev.d AS changed_date
+            FROM ev
+            JOIN ev_eod ee ON ee.opportunity_id = ev.opportunity_id AND ee.d = ev.d
+            LEFT JOIN fact_opportunities o ON o.opportunity_id = ev.opportunity_id
+            WHERE (
+                    (ev.pipeline_name IN ('L2C - Education', 'CLT - Onshore Admission')
+                     AND ev.new_stage IN ('COE Received', 'Initial Received'))
+                 OR (ev.pipeline_name = 'CLT - VISA'
+                     AND ev.new_stage IN ('Application Submitted', 'Acknowledgment Sent + Doc'))
+                  )
+              AND ee.eod_order >= ev.stage_order
+            UNION ALL
+            -- (B) Won  +  (C) current stage IS a conversion stage
             SELECT o.contact_id, p.pipeline_name, s.stage_name, o.status,
                    CASE WHEN p.pipeline_name = 'CLT - VISA' THEN 'POC' ELSE 'COE' END AS conv_type,
-                   CAST(
-                       CASE
-                           WHEN s.stage_name IN ('COE Received', 'Initial Received',
-                                    'Application Submitted', 'Acknowledgment Sent + Doc')
-                                AND o.last_stage_change_at IS NOT NULL
-                               THEN o.last_stage_change_at
-                           WHEN LOWER(o.status) = 'won' AND o.last_status_change_at IS NOT NULL
-                               THEN o.last_status_change_at
-                           ELSE o.updated_at
-                       END + INTERVAL 10 HOUR AS DATE)                          AS changed_date
+                   CAST(CASE
+                       WHEN LOWER(o.status) = 'won' AND o.last_status_change_at IS NOT NULL
+                           THEN o.last_status_change_at
+                       ELSE o.last_stage_change_at
+                   END + INTERVAL 10 HOUR AS DATE)                              AS changed_date
             FROM fact_opportunities o
             JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id
                  AND p.pipeline_name IN ('L2C - Education', 'CLT - Onshore Admission', 'CLT - VISA')
@@ -2151,7 +2180,7 @@ conv AS (
                  AND (s.stage_name IN ('Application Submitted', 'Acknowledgment Sent + Doc')
                       OR LOWER(o.status) = 'won'))
               )
-        ) q
+        ) u
         WHERE changed_date BETWEEN $since AND $until
     ) r
     WHERE rn = 1
