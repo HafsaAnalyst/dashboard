@@ -7131,19 +7131,19 @@ if _active_tab == "WBR":
                   link_clicks=("link_clicks", "sum"), msg=("msg", "sum")).reset_index()
               if not _md.empty else
               pd.DataFrame(columns=["_l", "account", "spend", "impr", "link_clicks", "msg"]))
-        # Paid-Social LEADS by account/week (cohort — new leads that week).
-        paid = e1[e1["refined_source"] == "Paid Social"].copy() if not e1.empty else pd.DataFrame()
+        # Paid-Social FUNNEL by account/week — SAME cohort as the Meta Ads tab: only
+        # leads that ARRIVED that week (created or revived), and Booked / Showed = of
+        # THOSE leads (gated appt_booked / appt_showed), so WBR ties to the Meta Ads tab.
+        paid = e1[(e1["refined_source"] == "Paid Social")
+                  & ((e1["is_created"] == 1) | (e1["is_revived"] == 1))].copy() \
+            if not e1.empty else pd.DataFrame()
         if not paid.empty:
             paid["account"] = paid["campaign"].map(lambda c: _c2a.get(_ckey(c)))
-            pg = (paid.dropna(subset=["account"]).groupby(["_l", "account"])
-                    .agg(leads=("contact_id", "count")).reset_index())
+            pg = (paid.dropna(subset=["account"]).groupby(["_l", "account"]).agg(
+                    leads=("contact_id", "count"), booked=("appt_booked", "sum"),
+                    showed=("appt_showed", "sum")).reset_index())
         else:
-            pg = pd.DataFrame(columns=["_l", "account", "leads"])
-        # Meta BOOKED / SHOWED by account/week (activity — appointments routed to account).
-        _apm = apx[apx["is_meta"]] if not apx.empty else apx
-        pgb = (_apm.groupby(["_l", "account"]).agg(
-                   booked=("contact_id", "count"), showed=("showed", "sum")).reset_index()
-               if not _apm.empty else pd.DataFrame(columns=["_l", "account", "booked", "showed"]))
+            pg = pd.DataFrame(columns=["_l", "account", "leads", "booked", "showed"])
 
         _MET = ["Total Spend (AUD)", "Link Clicks", "Cost Per Link Click", "CPM",
                 "Messaging Conv. Started", "Leads", "CPL", "Appointment Booked", "Showed",
@@ -7152,10 +7152,9 @@ if _active_tab == "WBR":
         def _pm_val(pl, acct, met):
             m = mg[(mg["_l"] == pl) & (mg["account"] == acct)]
             p = pg[(pg["_l"] == pl) & (pg["account"] == acct)]
-            b = pgb[(pgb["_l"] == pl) & (pgb["account"] == acct)]
             sp = float(m["spend"].sum()) * fx
             impr = int(m["impr"].sum()); lclk = int(m["link_clicks"].sum()); msg = int(m["msg"].sum())
-            lds = int(p["leads"].sum()); bk = int(b["booked"].sum()); sh = int(b["showed"].sum())
+            lds = int(p["leads"].sum()); bk = int(p["booked"].sum()); sh = int(p["showed"].sum())
             return {
                 "Total Spend (AUD)": sp, "Link Clicks": lclk,
                 "Cost Per Link Click": (sp / lclk if lclk else None),
@@ -7176,24 +7175,22 @@ if _active_tab == "WBR":
                     _pm.loc[met, (pl, loc)] = _fmt(met, _pm_val(pl, loc, met))
         st.dataframe(_pm, use_container_width=True, height=460)
         st.caption("Spend / Link Clicks / CPM / Messaging from **Meta** (per ad account, USD→AUD "
-                   f"@ {fx:.2f}). **Leads** = Paid-Social leads mapped to the account via their "
-                   "campaign (new leads that week) · CPL = Spend ÷ Leads · **Appointment Booked / "
-                   "Showed** = actual appointments *booked* that week whose lead is Paid-Social, "
-                   "routed to the account · Cost Per Appt = Spend ÷ Booked · Booking→Show = "
-                   "Showed ÷ Booked.")
+                   f"@ {fx:.2f}). **Same funnel as the Meta Ads tab**: **Leads** = new Paid-Social "
+                   "leads that arrived that week (created/revived), mapped to the account via their "
+                   "campaign · **Appointment Booked / Showed** = of THOSE leads · CPL = Spend ÷ Leads "
+                   "· Cost Per Appt = Spend ÷ Booked · Booking→Show = Showed ÷ Booked.")
 
         # ---- Organic Leads (combined Melbourne + Sydney) ----
         st.markdown("#### 🌱 Organic Leads — combined (Melbourne + Sydney)")
         _SRC = {"Referral": "Referrals", "Direct": "Direct", "Organic Search": "Organic Search",
                 "Social media": "Social Media", "Walk-in": "Walk-in"}
-        org = e1[e1["refined_source"] != "Paid Social"].copy() if not e1.empty else pd.DataFrame()
+        # Same funnel as above: only organic leads that ARRIVED that week; Booked /
+        # Showed = of THOSE leads (cohort), consistent with Performance Marketing.
+        org = e1[(e1["refined_source"] != "Paid Social")
+                 & ((e1["is_created"] == 1) | (e1["is_revived"] == 1))].copy() \
+            if not e1.empty else pd.DataFrame()
         if not org.empty:
             org["src"] = org["refined_source"].map(lambda s: _SRC.get(s, "Others"))
-        # Organic BOOKED / SHOWED = actual appointments that are NOT Meta-attributed
-        # (all non-Paid-Social sources + Queries/No-Activity + any unmapped Paid Social).
-        _aorg = apx[~apx["is_meta"]] if not apx.empty else apx
-        _og = (_aorg.groupby("_l").agg(booked=("contact_id", "count"), showed=("showed", "sum"))
-               if not _aorg.empty else pd.DataFrame(columns=["booked", "showed"]))
         _SRCROWS = ["Referrals", "Direct", "Organic Search", "Social Media", "Walk-in", "Others"]
         _OROWS = _SRCROWS + ["Organic Total Leads", "Appointment Booked", "Showed", "Booking → Show rate"]
         _org = pd.DataFrame(index=_OROWS, columns=_cols, dtype=object)
@@ -7203,29 +7200,32 @@ if _active_tab == "WBR":
             for s in _SRCROWS:
                 n = int((sub["src"] == s).sum()) if not org.empty and not sub.empty else 0
                 _org.loc[s, pl] = n; tot += n
-            bk = int(_og.loc[pl, "booked"]) if pl in _og.index else 0
-            sh = int(_og.loc[pl, "showed"]) if pl in _og.index else 0
+            bk = int(sub["appt_booked"].sum()) if not org.empty and not sub.empty else 0
+            sh = int(sub["appt_showed"].sum()) if not org.empty and not sub.empty else 0
             _org.loc["Organic Total Leads", pl] = tot
             _org.loc["Appointment Booked", pl] = bk
             _org.loc["Showed", pl] = sh
             _org.loc["Booking → Show rate", pl] = (f"{sh / bk * 100:.0f}%" if bk else "—")
         st.dataframe(_org, use_container_width=True, height=400)
-        st.caption("Organic = every non-Paid-Social lead (both offices combined), by source, from "
-                   "GHL — **Queries & No Activity** count in **Others**. **Appointment Booked / "
-                   "Showed** = actual appointments booked that week for non-Paid-Social leads. "
+        st.caption("Organic = every non-Paid-Social lead that arrived that week (both offices "
+                   "combined), by source — **Queries & No Activity** count in **Others**. **Same "
+                   "funnel as above**: **Appointment Booked / Showed** = of those leads. "
                    "**Booking → Show rate** = Showed ÷ Appointment Booked.")
 
         # ---- Bookings — by counsellor (labelled with their service) ----
-        # Same reconciled appointment set (apx) sliced by counsellor. Column totals
-        # equal Meta booked + Organic booked above.
-        st.markdown("#### 🗓️ Bookings — by counsellor")
+        # Standalone ACTIVITY view (all appointments booked in the week, by the
+        # counsellor who owns the calendar). NOTE: this is activity, so it does NOT
+        # tie to the funnel Booked rows above (which count only this week's leads'
+        # bookings) — it answers "who booked appointments this week".
+        st.markdown("#### 🗓️ Appointments booked this week — by counsellor")
         if not apx.empty:
             _tc = (apx.groupby(["couns", "_l"]).size().unstack("_l", fill_value=0)
                    .reindex(index=_CROWS, columns=_cols, fill_value=0))
             st.dataframe(_tc, use_container_width=True, height=330)
         else:
             st.caption("No appointments in range.")
-        st.caption("Every appointment booked in the week (test/staff excluded), grouped by the "
-                   "counsellor who owns its calendar — label = service (**visa** = MARA · "
-                   "**career** · **education**). Column totals reconcile with **Meta Appointment "
-                   "Booked + Organic Appointment Booked** above.")
+        st.caption("**Activity** — every appointment *booked* in the week (test/staff excluded), by "
+                   "the counsellor who owns its calendar (label = service: **visa** = MARA · "
+                   "**career** · **education**). This counts ALL appointments booked that week, so "
+                   "it does **not** tie to the funnel Booked rows above (those count only this "
+                   "week's leads).")
