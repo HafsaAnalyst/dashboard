@@ -1798,6 +1798,15 @@ lopp AS (
     JOIN dim_stages   st ON st.stage_id   = o.stage_id
 ),
 opp_cnt AS (SELECT contact_id, COUNT(*) AS n_opps FROM fact_opportunities GROUP BY contact_id),
+-- Query-only contacts: EVERY opportunity is in the 'Query Management' pipeline (a
+-- query-handling pipeline, not a sales pipeline) — not genuine leads, so excluded from
+-- the Leads count everywhere. A contact that also has a real (non-QM) opp is kept.
+qm_only AS (
+    SELECT o.contact_id FROM fact_opportunities o
+    JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id
+    GROUP BY o.contact_id
+    HAVING COUNT(*) FILTER (WHERE p.pipeline_name <> 'Query Management') = 0
+),
 -- Returning client = had an opportunity (a prior service / engagement) BEFORE
 -- the current window, then came back. Used to re-label would-be Other/Unknown.
 prior_opp AS (
@@ -1840,6 +1849,7 @@ clead AS (SELECT contact_id, lead_source FROM fact_contact_lead_source)
 SELECT * REPLACE (
     CASE
         WHEN stage = 'Junk Leads' THEN 'No Activity'
+        WHEN is_query_only THEN 'No Activity'
         WHEN pipeline IS NULL AND appt_booked = 0 AND NOT is_google_organic
              THEN 'No Activity'
         ELSE refined_source
@@ -2068,6 +2078,7 @@ SELECT
      OR LOWER(COALESCE(ch.attribution_campaign,'')) LIKE 'gmb%'
      OR LOWER(regexp_extract(ls.page_url,'utm_medium=([^&]+)',1))
             IN ('gbp', 'gmb', 'organic'))                                  AS is_google_organic,
+    (qmo.contact_id IS NOT NULL)                                           AS is_query_only,
     ls.form_name                                                           AS form_name,
     ch.visa_type                                                           AS visa
 FROM cohort ch
@@ -2077,6 +2088,7 @@ LEFT JOIN appt a   ON a.contact_id  = ch.contact_id AND a.rn = 1
 LEFT JOIN dim_calendars dc ON dc.calendar_id = a.calendar_id
 LEFT JOIN lopp lo  ON lo.contact_id = ch.contact_id AND lo.rn = 1
 LEFT JOIN opp_cnt oc ON oc.contact_id = ch.contact_id
+LEFT JOIN qm_only qmo ON qmo.contact_id = ch.contact_id
 LEFT JOIN prior_opp po ON po.contact_id = ch.contact_id
 LEFT JOIN paid_ever pe ON pe.contact_id = ch.contact_id
 LEFT JOIN walkin_appt wa ON wa.contact_id = ch.contact_id
