@@ -1791,11 +1791,17 @@ appt AS (
     WHERE LOWER(COALESCE(appointment_status,'')) <> 'invalid' AND contact_id IS NOT NULL
 ),
 lopp AS (
+    -- The lead's representative pipeline/stage = most-recently-updated opp, EXCLUDING
+    -- 'Query Management' (a query-handling pipeline, not a sales pipeline). This stops a
+    -- real lead from displaying as 'Query Management' just because a query was logged
+    -- most recently — they show their real sales pipeline instead. A contact whose ONLY
+    -- opps are Query Management then has no pipeline here and is dropped as query-only.
     SELECT o.contact_id, p.pipeline_name, st.stage_name, o.status,
            ROW_NUMBER() OVER (PARTITION BY o.contact_id ORDER BY o.updated_at DESC) AS rn
     FROM fact_opportunities o
     JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id
     JOIN dim_stages   st ON st.stage_id   = o.stage_id
+    WHERE p.pipeline_name <> 'Query Management'
 ),
 opp_cnt AS (SELECT contact_id, COUNT(*) AS n_opps FROM fact_opportunities GROUP BY contact_id),
 -- Query-only contacts: EVERY opportunity is in the 'Query Management' pipeline (a
