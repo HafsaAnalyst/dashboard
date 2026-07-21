@@ -7245,11 +7245,18 @@ if _active_tab == "WBR":
         _EDU_ROWS = ["Kajal (education)", "Navneet (education)",
                      "Saurab (education)", "Wajahad (education)"]
         _conv = run_df("vw_exec1_conversions", {"since": _mstr, "until": _ustr})
-        _coe = _conv[_conv["conv_type"] == "COE"].copy() if not _conv.empty else pd.DataFrame()
 
         def _own2lbl(o):
             return _COWN.get(o.split()[0].lower()) if isinstance(o, str) and o.strip() else None
-        if not _coe.empty:
+        if _conv.empty or "conv_type" not in _conv.columns:
+            _coe = pd.DataFrame()
+        elif "owner" not in _conv.columns:
+            # view not yet updated with the 'owner' column — surface it instead of crashing
+            st.caption("⚠️ The conversions view needs updating (missing `owner`) — deploy the latest "
+                       "`sql/tab_cards.sql` and reboot.")
+            _coe = pd.DataFrame()
+        else:
+            _coe = _conv[_conv["conv_type"] == "COE"].copy()
             _coe["couns"] = _coe["owner"].map(_own2lbl)
             _coe = _coe.dropna(subset=["couns"])
         if not _coe.empty:
