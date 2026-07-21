@@ -7361,20 +7361,26 @@ if _active_tab == "Breakdown":
                     "Phone": dd["phone"].fillna("—").replace("", "—").values,
                 })
 
-            st.caption(f"**{_tot:,} opportunities** in {' · '.join(_BRK_PIPES)} — scoped to the selected "
-                       "range (opportunity created, or its contact filled a form / booked an appointment "
-                       "in range). **Source** = the dashboard's refined (last-touch) classification. "
-                       "**Duplicate opps** = a contact's 2nd+ opportunity. Click a row to drill in.")
+            _tot_uniq = int(bo["contact_id"].nunique())
+            st.caption(f"**{_tot:,} opportunities** ({_tot_uniq:,} unique contacts) in "
+                       f"{' · '.join(_BRK_PIPES)} — scoped to the selected range (opportunity created, or "
+                       "its contact filled a form / booked an appointment in range). **Opportunities** = "
+                       "unique contacts; **Duplicate opps** = extra opportunities beyond one per contact. "
+                       "Click a row to drill in.")
 
-            # ---- Table 1 — by source ----
+            # ---- Table 1 — by source (UNIQUE contacts) ----
             st.markdown("#### 📊 By source — click a row to see its opportunities")
-            _gs = (bo.groupby("src").agg(opps=("opportunity_id", "count"),
-                     dup=("is_dup", "sum"), booked=("is_booked", "sum")).reset_index())
-            _gs["pct"] = (_gs["opps"] / _tot * 100).map(lambda v: f"{v:.0f}%")
-            _gs = (_gs.sort_values("opps", ascending=False).reset_index(drop=True)
-                   .rename(columns={"src": "Source", "opps": "Opportunities",
+            _bku = bo[bo["is_booked"]].groupby("src")["contact_id"].nunique()
+            _gs = bo.groupby("src").agg(uniq=("contact_id", "nunique"),
+                                        total=("opportunity_id", "count")).reset_index()
+            _gs["dup"] = _gs["total"] - _gs["uniq"]
+            _gs["booked"] = _gs["src"].map(_bku).fillna(0).astype(int)
+            _gs["pct"] = (_gs["uniq"] / _tot_uniq * 100).map(lambda v: f"{v:.0f}%")
+            _gs = (_gs.sort_values("uniq", ascending=False).reset_index(drop=True)
+                   .rename(columns={"src": "Source", "uniq": "Opportunities",
                                     "dup": "Duplicate opps", "booked": "Booked", "pct": "% of opps"}))
-            for _c in ("Duplicate opps", "Booked"):
+            _gs = _gs[["Source", "Opportunities", "Duplicate opps", "Booked", "% of opps"]]
+            for _c in ("Opportunities", "Duplicate opps", "Booked"):
                 _gs[_c] = _gs[_c].astype(int)
             _sel_s = st.dataframe(_gs, hide_index=True, use_container_width=True,
                                   on_select="rerun", selection_mode="single-row", key="brk_src")
@@ -7391,10 +7397,12 @@ if _active_tab == "Breakdown":
             # ---- Table 2 — by counsellor (appointment calendar) ----
             st.markdown("#### 🗓️ By counsellor — click a row to see its opportunities")
             _cb = bo[bo["couns"].isin(_BRK_CROWS)]
-            _gc = (_cb.groupby("couns").agg(opps=("opportunity_id", "count"),
-                     showed=("is_showed", "sum")).reindex(_BRK_CROWS, fill_value=0).reset_index())
-            _gc["pct"] = (_gc["opps"] / _tot * 100).map(lambda v: f"{v:.0f}%")
-            _gc = _gc.rename(columns={"couns": "Counsellor", "opps": "Opportunities",
+            _shu = _cb[_cb["is_showed"]].groupby("couns")["contact_id"].nunique()
+            _gc = (_cb.groupby("couns").agg(uniq=("contact_id", "nunique"))
+                   .reindex(_BRK_CROWS, fill_value=0).reset_index())
+            _gc["showed"] = _gc["couns"].map(_shu).fillna(0).astype(int)
+            _gc["pct"] = (_gc["uniq"] / _tot_uniq * 100).map(lambda v: f"{v:.0f}%")
+            _gc = _gc.rename(columns={"couns": "Counsellor", "uniq": "Opportunities",
                                       "showed": "Showed", "pct": "% of opps"})
             _gc["Opportunities"] = _gc["Opportunities"].astype(int); _gc["Showed"] = _gc["Showed"].astype(int)
             _sel_c = st.dataframe(_gc, hide_index=True, use_container_width=True,
