@@ -917,7 +917,7 @@ except Exception as _dberr:
 # Lazy tabs: a segmented control drives which ONE tab renders, so only the
 # selected tab runs its (expensive) MotherDuck queries — not all 8 every rerun.
 _TAB_NAMES = ["Executive", "Meta Ads", "Funnels", "Counsellors", "SEO & Traffic",
-              "Forecast & Goals", "Upload Reports", "Follower Performance", "WBR"]
+              "Forecast & Goals", "Upload Reports", "Follower Performance", "WBR", "Breakdown"]
 _active_tab = st.segmented_control(
     "Tabs", _TAB_NAMES, default="Executive", key="active_tab",
     label_visibility="collapsed") or "Executive"
@@ -7259,3 +7259,155 @@ if _active_tab == "WBR":
         st.caption("**COE conversions** (same as the Executive **Conversions → COE** drill) counted by "
                    "the **counsellor whose calendar** the contact's appointment is on (education "
                    "consultants), dated by when COE was reached.")
+
+
+# =====================================================================
+# BREAKDOWN TAB — opportunity-level breakdown of the three sales pipelines
+# (L2C - Education / L2C - VISA / CLT - VISA) by attribution source and by
+# counsellor appointment calendar, each clickable to the opportunity rows.
+# =====================================================================
+if _active_tab == "Breakdown":
+    st.markdown(
+        "<div class='panel-title'>Breakdown — opportunities by source & counsellor"
+        "<span class='hint'>L2C-Education · L2C-VISA · CLT-VISA · scoped to the selected range</span></div>",
+        unsafe_allow_html=True)
+
+    _BRK_PIPES = ["L2C - Education", "L2C - VISA", "CLT - VISA"]
+
+    # counsellor calendar_name -> "Firstname (service)" (same mapping as the WBR tab)
+    def _brk_svc(nm):
+        if "Navneet Kaur" in nm:
+            return "education"
+        if "MARA" in nm:
+            return "visa"
+        if "Career Counsellor" in nm:
+            return "career"
+        if "Education" in nm:
+            return "education"
+        return "education"
+    _brk_clbl = {c["name"]: f"{c['name'].split(' - ')[0].split()[0]} ({_brk_svc(c['name'])})"
+                 for c in COUNSELLORS}
+    _brk_cid2lbl = {cid: _brk_clbl[c["name"]] for c in COUNSELLORS for cid in c["calendar_ids"]}
+    _BRK_CROWS = ["Gurbir (visa)", "Nasir (visa)", "Turab (career)", "Kajal (education)",
+                  "Navneet (education)", "Saurab (education)", "Wajahad (education)"]
+    _brk_dcm = dict(db_exec("SELECT calendar_id, calendar_name FROM dim_calendars").fetchall())
+    _brk_calname2lbl = {_brk_dcm[cid]: lbl for cid, lbl in _brk_cid2lbl.items() if cid in _brk_dcm}
+
+    # contacts (cohort for the selected range) + refined source / appointment / fields
+    _e1 = run_df("vw_exec1_lead_detail",
+                 {"since": since.isoformat(), "until": until.isoformat(), "city": "All"})
+    _ph = ",".join(["?"] * len(_BRK_PIPES))
+    _opps = db_exec(
+        f"SELECT o.opportunity_id, o.contact_id, p.pipeline_name AS opp_pipeline, "
+        f"s.stage_name AS opp_stage, o.status AS opp_status, o.assigned_user_id "
+        f"FROM fact_opportunities o "
+        f"JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id "
+        f"JOIN dim_stages s ON s.stage_id = o.stage_id "
+        f"WHERE p.pipeline_name IN ({_ph})", _BRK_PIPES).fetchdf()
+    _owners = dict(db_exec("SELECT user_id, full_name FROM dim_users").fetchall())
+
+    _e1b = (_e1[~_e1["refined_source"].isin(["No Activity", "Queries"])]
+            if not _e1.empty else _e1)
+    if _e1b.empty or _opps.empty:
+        st.info("No opportunities in this range.")
+    else:
+        # join each opportunity to its contact's cohort row (scope = contact created /
+        # revived by form / booked in range) — one row per opportunity carrying its OWN
+        # pipeline/stage/status + the contact's source & appointment.
+        _cols = ["contact_id", "refined_source", "email", "contact_name", "phone",
+                 "social_platform", "query_channel", "calendar_name", "appt_booked",
+                 "appt_showed", "appt_booked_date", "lead_date"]
+        bo = _opps.merge(_e1b[_cols], on="contact_id", how="inner")
+        if bo.empty:
+            st.info("No opportunities in this range.")
+        else:
+            bo["Owner"] = bo["assigned_user_id"].map(_owners).fillna("—").replace("", "—")
+            _SR = {"Paid Social": "Paid Social", "Organic Search": "Organic Search",
+                   "Social media": "Social Media", "Referral": "Referrals",
+                   "Walk-in": "Walk-in", "Direct": "Direct"}
+            bo["src"] = bo["refined_source"].map(lambda s: _SR.get(s, "Others"))
+            bo["is_dup"] = bo.groupby("contact_id").cumcount() > 0     # 2nd+ opp = duplicate
+            bo["is_booked"] = (bo["appt_booked"] == 1)
+            bo["is_showed"] = (bo["appt_showed"] == 1)
+            bo["couns"] = bo["calendar_name"].map(lambda n: _brk_calname2lbl.get(n))
+            _tot = len(bo)
+
+            def _brk_detail(df):
+                dd = df.copy()
+                appt = dd.apply(lambda r: "Showed" if r["appt_showed"] == 1
+                                else ("Booked" if r["appt_booked"] == 1 else "—"), axis=1)
+                cal = dd.apply(lambda r: r["calendar_name"]
+                               if (r["appt_booked"] == 1 and pd.notna(r["calendar_name"])) else "—", axis=1)
+
+                def _plat(r):
+                    rs = r["refined_source"]
+                    v = (r.get("social_platform") if rs in ("Social media", "Paid Social")
+                         else (r.get("query_channel") if rs == "Queries" else None))
+                    return v if (pd.notna(v) and str(v) not in ("", "None")) else "—"
+                return pd.DataFrame({
+                    "Email": dd["email"].fillna("(no email)").values,
+                    "Source": dd["refined_source"].values,
+                    "Platform": dd.apply(_plat, axis=1).values,
+                    "Lead Created Date": pd.to_datetime(dd["lead_date"]).dt.strftime("%Y-%m-%d").values,
+                    "Appt Created Date": dd["appt_booked_date"].map(
+                        lambda v: pd.to_datetime(v).strftime("%Y-%m-%d") if pd.notna(v) else "—").values,
+                    "Appointment Status": appt.values,
+                    "Calendar Name": cal.values,
+                    "Pipeline": dd["opp_pipeline"].fillna("—").values,
+                    "Stage": dd["opp_stage"].fillna("—").values,
+                    "Status": dd["opp_status"].fillna("—").replace("", "—").values,
+                    "Owner": dd["Owner"].values,
+                    "Name": dd["contact_name"].fillna("—").replace("", "—").values,
+                    "Phone": dd["phone"].fillna("—").replace("", "—").values,
+                })
+
+            st.caption(f"**{_tot:,} opportunities** in {' · '.join(_BRK_PIPES)} — scoped to the selected "
+                       "range (opportunity created, or its contact filled a form / booked an appointment "
+                       "in range). **Source** = the dashboard's refined (last-touch) classification. "
+                       "**Duplicate opps** = a contact's 2nd+ opportunity. Click a row to drill in.")
+
+            # ---- Table 1 — by source ----
+            st.markdown("#### 📊 By source — click a row to see its opportunities")
+            _gs = (bo.groupby("src").agg(opps=("opportunity_id", "count"),
+                     dup=("is_dup", "sum"), booked=("is_booked", "sum")).reset_index())
+            _gs["pct"] = (_gs["opps"] / _tot * 100).map(lambda v: f"{v:.0f}%")
+            _gs = (_gs.sort_values("opps", ascending=False).reset_index(drop=True)
+                   .rename(columns={"src": "Source", "opps": "Opportunities",
+                                    "dup": "Duplicate opps", "booked": "Booked", "pct": "% of opps"}))
+            for _c in ("Duplicate opps", "Booked"):
+                _gs[_c] = _gs[_c].astype(int)
+            _sel_s = st.dataframe(_gs, hide_index=True, use_container_width=True,
+                                  on_select="rerun", selection_mode="single-row", key="brk_src")
+            try:
+                _rs = (_sel_s.selection.get("rows") if _sel_s else None) or []
+                _pick_s = _gs.iloc[int(_rs[0])]["Source"] if _rs else None
+            except Exception:
+                _pick_s = None
+            if _pick_s:
+                _d = bo[bo["src"] == _pick_s]
+                st.markdown(f"**{_pick_s} · {len(_d):,} opportunities**")
+                st.dataframe(_brk_detail(_d), hide_index=True, use_container_width=True, height=420)
+
+            # ---- Table 2 — by counsellor (appointment calendar) ----
+            st.markdown("#### 🗓️ By counsellor — click a row to see its opportunities")
+            _cb = bo[bo["couns"].isin(_BRK_CROWS)]
+            _gc = (_cb.groupby("couns").agg(opps=("opportunity_id", "count"),
+                     showed=("is_showed", "sum")).reindex(_BRK_CROWS, fill_value=0).reset_index())
+            _gc["pct"] = (_gc["opps"] / _tot * 100).map(lambda v: f"{v:.0f}%")
+            _gc = _gc.rename(columns={"couns": "Counsellor", "opps": "Opportunities",
+                                      "showed": "Showed", "pct": "% of opps"})
+            _gc["Opportunities"] = _gc["Opportunities"].astype(int); _gc["Showed"] = _gc["Showed"].astype(int)
+            _sel_c = st.dataframe(_gc, hide_index=True, use_container_width=True,
+                                  on_select="rerun", selection_mode="single-row", key="brk_cal")
+            try:
+                _rc = (_sel_c.selection.get("rows") if _sel_c else None) or []
+                _pick_c = _gc.iloc[int(_rc[0])]["Counsellor"] if _rc else None
+            except Exception:
+                _pick_c = None
+            if _pick_c:
+                _d = bo[bo["couns"] == _pick_c]
+                st.markdown(f"**{_pick_c} · {len(_d):,} opportunities**")
+                st.dataframe(_brk_detail(_d), hide_index=True, use_container_width=True, height=420)
+            st.caption("Counsellor = who owns the contact's appointment calendar (opportunities whose "
+                       "contact has no appointment on a counsellor's calendar aren't shown here). "
+                       "**Owner** = the opportunity's assigned user.")

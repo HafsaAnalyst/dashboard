@@ -1730,13 +1730,21 @@ LEFT JOIN chan ch ON ch.contact_id = c.contact_id;
 -- =====================================================================
 CREATE OR REPLACE VIEW vw_exec1_lead_detail AS
 WITH all_subs AS (
+    -- Exclude the internal 'Query Management' query forms ('Query Management' /
+    -- 'Query Management - Internal'): filling one is a query, NOT a lead event, so it
+    -- must not REVIVE a contact into the window or set their lead source. A genuine
+    -- lead is still counted via its creation / real form / appointment.
     SELECT contact_id, submitted_at, campaign, event_source, page_url, referrer,
            COALESCE(NULLIF(form_name,''), NULLIF(event_form_name,'')) AS form_name
-    FROM fact_form_submissions   WHERE contact_id IS NOT NULL
+    FROM fact_form_submissions
+    WHERE contact_id IS NOT NULL
+      AND COALESCE(NULLIF(form_name,''), NULLIF(event_form_name,'')) NOT LIKE 'Query Management%'
     UNION ALL
     SELECT contact_id, submitted_at, campaign, event_source, page_url, referrer,
            survey_name AS form_name
-    FROM fact_survey_submissions WHERE contact_id IS NOT NULL
+    FROM fact_survey_submissions
+    WHERE contact_id IS NOT NULL
+      AND COALESCE(survey_name, '') NOT LIKE 'Query Management%'
 ),
 ls AS (
     SELECT * FROM (
