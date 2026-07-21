@@ -7364,23 +7364,49 @@ if _active_tab == "Breakdown":
             _tot_uniq = int(bo["contact_id"].nunique())
             st.caption(f"**{_tot:,} opportunities** ({_tot_uniq:,} unique contacts) in "
                        f"{' · '.join(_BRK_PIPES)} — scoped to the selected range (opportunity created, or "
-                       "its contact filled a form / booked an appointment in range). **Opportunities** = "
-                       "unique contacts; **Duplicate opps** = extra opportunities beyond one per contact. "
-                       "Click a row to drill in.")
+                       "its contact filled a form / booked an appointment in range). **Lead** = leads by "
+                       "the Executive-scorecard definition (created/revived, unmapped Paid dropped); "
+                       "**Opportunities** = unique contacts with an opp here; **Duplicate opps** = extra "
+                       "opportunities beyond one per contact. Click a row to drill in.")
 
             # ---- Table 1 — by source (UNIQUE contacts) ----
             st.markdown("#### 📊 By source — click a row to see its opportunities")
+            # Lead per source — SAME logic as the Executive scorecard: funnel
+            # (created OR revived), then drop unmapped Paid-Social (no ad account).
+            def _bck(s):
+                s = str(s or "").lower()
+                for _a, _b in (("%7c", "|"), ("%2f", "/"), ("%2b", "+"), ("%20", " "),
+                               ("%26", "&"), ("+", " ")):
+                    s = s.replace(_a, _b)
+                return re.sub(r"[^a-z0-9]", "", s)
+            try:
+                _bcc = db_exec("SELECT DISTINCT campaign_name, account_label FROM ("
+                               "  SELECT campaign_name, account_label FROM fact_meta_daily "
+                               "  UNION ALL SELECT campaign_name, account_label FROM fact_meta_insights) "
+                               "WHERE COALESCE(campaign_name,'') <> ''").fetchall()
+                _bmap = {_bck(n): l for n, l in _bcc if l}
+                for _k, _l in fetch_meta_campaign_accounts().items():
+                    _bmap.setdefault(_k, _l)
+            except Exception:
+                _bmap = {}
+            _ld = _e1b[(_e1b["is_created"] == 1) | (_e1b["is_revived"] == 1)].copy()
+            _pm = _ld["refined_source"] == "Paid Social"
+            _ld = _ld[~_pm | _ld["campaign"].map(lambda c: _bmap.get(_bck(c)) in ("Melbourne", "Sydney"))]
+            _lead_by_src = (_ld.assign(src=_ld["refined_source"].map(lambda s: _SR.get(s, "Others")))
+                            .groupby("src")["contact_id"].nunique())
+
             _bku = bo[bo["is_booked"]].groupby("src")["contact_id"].nunique()
             _gs = bo.groupby("src").agg(uniq=("contact_id", "nunique"),
                                         total=("opportunity_id", "count")).reset_index()
             _gs["dup"] = _gs["total"] - _gs["uniq"]
             _gs["booked"] = _gs["src"].map(_bku).fillna(0).astype(int)
+            _gs["lead"] = _gs["src"].map(_lead_by_src).fillna(0).astype(int)
             _gs["pct"] = (_gs["uniq"] / _tot_uniq * 100).map(lambda v: f"{v:.0f}%")
             _gs = (_gs.sort_values("uniq", ascending=False).reset_index(drop=True)
-                   .rename(columns={"src": "Source", "uniq": "Opportunities",
+                   .rename(columns={"src": "Source", "lead": "Lead", "uniq": "Opportunities",
                                     "dup": "Duplicate opps", "booked": "Booked", "pct": "% of opps"}))
-            _gs = _gs[["Source", "Opportunities", "Duplicate opps", "Booked", "% of opps"]]
-            for _c in ("Opportunities", "Duplicate opps", "Booked"):
+            _gs = _gs[["Source", "Lead", "Opportunities", "Duplicate opps", "Booked", "% of opps"]]
+            for _c in ("Lead", "Opportunities", "Duplicate opps", "Booked"):
                 _gs[_c] = _gs[_c].astype(int)
             _sel_s = st.dataframe(_gs, hide_index=True, use_container_width=True,
                                   on_select="rerun", selection_mode="single-row", key="brk_src")
