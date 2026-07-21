@@ -7292,6 +7292,11 @@ if _active_tab == "Breakdown":
                   "Navneet (education)", "Saurab (education)", "Wajahad (education)"]
     _brk_dcm = dict(db_exec("SELECT calendar_id, calendar_name FROM dim_calendars").fetchall())
     _brk_calname2lbl = {_brk_dcm[cid]: lbl for cid, lbl in _brk_cid2lbl.items() if cid in _brk_dcm}
+    # owner FIRST-name -> counsellor label. Used to attribute a booked-stage
+    # opportunity (e.g. "MARA Appointment Booked") that has NO linked appointment
+    # calendar to the counsellor who OWNS it (dim_users.full_name → first name).
+    _brk_fn2lbl = {c["name"].split(" - ")[0].split()[0].strip().lower(): _brk_clbl[c["name"]]
+                   for c in COUNSELLORS}
 
     # contacts (cohort for the selected range) + refined source / appointment / fields
     _e1 = run_df("vw_exec1_lead_detail",
@@ -7330,6 +7335,15 @@ if _active_tab == "Breakdown":
             bo["is_booked"] = (bo["appt_booked"] == 1)
             bo["is_showed"] = (bo["appt_showed"] == 1)
             bo["couns"] = bo["calendar_name"].map(lambda n: _brk_calname2lbl.get(n))
+            # A booked-stage opportunity ("... Appointment Booked") that has NO
+            # appointment calendar (calendar_name empty) still belongs to a
+            # counsellor — the one who OWNS it. Fall back to the owner's first
+            # name so those bookings show under their counsellor below.
+            _bstage = bo["opp_stage"].fillna("").str.lower().str.contains("appointment booked")
+            _own_lbl = bo["Owner"].map(
+                lambda o: _brk_fn2lbl.get(str(o).strip().split()[0].lower()) if o and str(o) != "—" else None)
+            _fill = bo["couns"].isna() & _bstage
+            bo.loc[_fill, "couns"] = _own_lbl[_fill]
             _tot = len(bo)
 
             def _brk_detail(df):
@@ -7442,6 +7456,7 @@ if _active_tab == "Breakdown":
                 _d = bo[bo["couns"] == _pick_c].drop_duplicates(subset=["contact_id"])
                 st.markdown(f"**{_pick_c} · {len(_d):,} contacts** (one row per contact — duplicates removed)")
                 st.dataframe(_brk_detail(_d), hide_index=True, use_container_width=True, height=420)
-            st.caption("Counsellor = who owns the contact's appointment calendar (opportunities whose "
-                       "contact has no appointment on a counsellor's calendar aren't shown here). "
+            st.caption("Counsellor = who owns the contact's appointment calendar; booked-stage "
+                       "opportunities (\"… Appointment Booked\") with no linked calendar are attributed "
+                       "to their **Owner** counsellor instead. Opportunities with neither aren't shown here. "
                        "**Owner** = the opportunity's assigned user.")
