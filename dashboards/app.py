@@ -7384,8 +7384,8 @@ if _active_tab == "Breakdown":
             except Exception:
                 _pick_s = None
             if _pick_s:
-                _d = bo[bo["src"] == _pick_s]
-                st.markdown(f"**{_pick_s} · {len(_d):,} opportunities**")
+                _d = bo[bo["src"] == _pick_s].drop_duplicates(subset=["contact_id"])
+                st.markdown(f"**{_pick_s} · {len(_d):,} contacts** (one row per contact — duplicates removed)")
                 st.dataframe(_brk_detail(_d), hide_index=True, use_container_width=True, height=420)
 
             # ---- Table 2 — by counsellor (appointment calendar) ----
@@ -7405,8 +7405,8 @@ if _active_tab == "Breakdown":
             except Exception:
                 _pick_c = None
             if _pick_c:
-                _d = bo[bo["couns"] == _pick_c]
-                st.markdown(f"**{_pick_c} · {len(_d):,} opportunities**")
+                _d = bo[bo["couns"] == _pick_c].drop_duplicates(subset=["contact_id"])
+                st.markdown(f"**{_pick_c} · {len(_d):,} contacts** (one row per contact — duplicates removed)")
                 st.dataframe(_brk_detail(_d), hide_index=True, use_container_width=True, height=420)
             st.caption("Counsellor = who owns the contact's appointment calendar (opportunities whose "
                        "contact has no appointment on a counsellor's calendar aren't shown here). "
