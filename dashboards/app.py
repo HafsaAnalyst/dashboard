@@ -3502,6 +3502,12 @@ def render_meta1_tab():
         ps  = ps[ps["account"] == city].copy()
         psp = psp[psp["account"] == city].copy()
 
+    # A lead whose campaign resolves to NO ad account ('(no campaign)' / an unmapped
+    # campaign) can't be attributed to Melbourne/Sydney, so it does NOT count — matches
+    # the Executive + WBR Paid-lead counts. (For a Mel/Syd city filter it's already a subset.)
+    ps  = ps[ps["account"].isin(["Melbourne", "Sydney"])].copy()
+    psp = psp[psp["account"].isin(["Melbourne", "Sydney"])].copy()
+
     def _agg(m, p):
         return dict(
             spend=(float(m["spend"].sum()) * fx if not m.empty else 0.0),
@@ -5335,6 +5341,31 @@ if _active_tab == "Executive":
         # scorecard. Queries (a separate anonymous-inquiry metric) keep their own count.
         _q0 = e1["refined_source"] == "Queries"
         e1 = e1[((e1["is_created"] == 1) | (e1["is_revived"] == 1)) | _q0].copy()
+        # Drop Paid-Social leads whose campaign resolves to NO ad account ('(no
+        # campaign)' / unmapped) — they can't be attributed to Melbourne/Sydney, so per
+        # the by-account view they don't count. Same rule as the Meta Ads & WBR tabs, so
+        # the Paid Leads count matches. Map = warehouse (daily ∪ insights) ∪ live list.
+        import re as _exre
+        def _exck(s):
+            s = str(s or "").lower()
+            for a, b in (("%7c", "|"), ("%2f", "/"), ("%2b", "+"), ("%20", " "),
+                         ("%26", "&"), ("+", " ")):
+                s = s.replace(a, b)
+            return _exre.sub(r"[^a-z0-9]", "", s)
+        try:
+            _excc = db_exec(
+                "SELECT DISTINCT campaign_name, account_label FROM ("
+                "  SELECT campaign_name, account_label FROM fact_meta_daily "
+                "  UNION ALL SELECT campaign_name, account_label FROM fact_meta_insights) "
+                "WHERE COALESCE(campaign_name,'') <> ''").fetchall()
+            _exmap = {_exck(n): lbl for n, lbl in _excc if lbl}
+            for _k, _lbl in fetch_meta_campaign_accounts().items():
+                _exmap.setdefault(_k, _lbl)
+        except Exception:
+            _exmap = {}
+        _ps_mask = e1["refined_source"] == "Paid Social"
+        _ps_ok = e1["campaign"].map(lambda c: _exmap.get(_exck(c)) in ("Melbourne", "Sydney"))
+        e1 = e1[~_ps_mask | _ps_ok].copy()
         q_mask = e1["refined_source"] == "Queries"
         leads_df = e1[~q_mask]
         n_leads = len(leads_df)
@@ -7203,3 +7234,31 @@ if _active_tab == "WBR":
         st.caption("Of the Paid + Organic leads above that **booked**, grouped by the counsellor who "
                    "owns the booking's calendar (label = service: **visa** = MARA · **career** · "
                    "**education**). Column totals tie to **Meta + Organic Appointment Booked** above.")
+
+        # ---- COE conversions by counsellor (opportunity owner), week over week ----
+        # Same COE definition as the Executive Conversions drill (vw_exec1_conversions),
+        # counted by the OPPORTUNITY OWNER (assigned counsellor) — for the education
+        # consultants who process enrolments.
+        st.markdown("#### 🎓 COE conversions — by counsellor (owner)")
+        _COWN = {"kajal": "Kajal (education)", "navneet": "Navneet (education)",
+                 "saurab": "Saurab (education)", "wajahad": "Wajahad (education)"}
+        _EDU_ROWS = ["Kajal (education)", "Navneet (education)",
+                     "Saurab (education)", "Wajahad (education)"]
+        _conv = run_df("vw_exec1_conversions", {"since": _mstr, "until": _ustr})
+        _coe = _conv[_conv["conv_type"] == "COE"].copy() if not _conv.empty else pd.DataFrame()
+
+        def _own2lbl(o):
+            return _COWN.get(o.split()[0].lower()) if isinstance(o, str) and o.strip() else None
+        if not _coe.empty:
+            _coe["couns"] = _coe["owner"].map(_own2lbl)
+            _coe = _coe.dropna(subset=["couns"])
+        if not _coe.empty:
+            _coe["_l"] = _coe["changed_date"].map(lambda x: _pk(x)[1])
+            _tcoe = (_coe.groupby(["couns", "_l"]).size().unstack("_l", fill_value=0)
+                     .reindex(index=_EDU_ROWS, columns=_cols, fill_value=0))
+            st.dataframe(_tcoe, use_container_width=True, height=180)
+        else:
+            st.caption("No COE conversions by these counsellors in range.")
+        st.caption("**COE conversions** (reached COE Received / Initial Received in L2C-Education or "
+                   "CLT-Onshore, or Won) — same as the Executive **Conversions → COE** drill — counted "
+                   "by the **opportunity owner** (assigned counsellor), dated by when COE was reached.")
