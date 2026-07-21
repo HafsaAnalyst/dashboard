@@ -1771,10 +1771,12 @@ cohort AS (
     FROM fact_contacts c
     LEFT JOIN last_sub s ON s.contact_id = c.contact_id
     LEFT JOIN appt_in_range air ON air.contact_id = c.contact_id
-    -- exclude the Instagram AI auto-responder contact (AI-generated messages)
-    -- and our own agency staff accounts (@themigration.com.au) — not leads.
+    -- exclude the Instagram AI auto-responder contact (AI-generated messages),
+    -- our own agency staff accounts (@themigration.com.au), and test contacts
+    -- (any email containing 'test', e.g. testyy@rt.com / johnsmithtesting@…) — not leads.
     WHERE LOWER(TRIM(COALESCE(c.contact_name, ''))) NOT IN ('insta user', 'insta ai')
       AND LOWER(COALESCE(c.email, '')) NOT LIKE '%@themigration.com.au'
+      AND LOWER(COALESCE(c.email, '')) NOT LIKE '%test%'
       AND (CAST(c.date_added + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
        OR CAST(s.last_sub  + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
        OR air.contact_id IS NOT NULL)
