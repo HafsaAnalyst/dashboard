@@ -7235,37 +7235,27 @@ if _active_tab == "WBR":
                    "owns the booking's calendar (label = service: **visa** = MARA · **career** · "
                    "**education**). Column totals tie to **Meta + Organic Appointment Booked** above.")
 
-        # ---- COE conversions by counsellor (opportunity owner), week over week ----
+        # ---- COE conversions by counsellor (appointment calendar), week over week ----
         # Same COE definition as the Executive Conversions drill (vw_exec1_conversions),
-        # counted by the OPPORTUNITY OWNER (assigned counsellor) — for the education
-        # consultants who process enrolments.
-        st.markdown("#### 🎓 COE conversions — by counsellor (owner)")
-        _COWN = {"kajal": "Kajal (education)", "navneet": "Navneet (education)",
-                 "saurab": "Saurab (education)", "wajahad": "Wajahad (education)"}
+        # counted by the COUNSELLOR WHOSE CALENDAR the contact's appointment is on
+        # (education consultants). calendar_name is already on the conversions view.
+        st.markdown("#### 🎓 COE conversions — by counsellor")
         _EDU_ROWS = ["Kajal (education)", "Navneet (education)",
                      "Saurab (education)", "Wajahad (education)"]
         _conv = run_df("vw_exec1_conversions", {"since": _mstr, "until": _ustr})
-
-        def _own2lbl(o):
-            return _COWN.get(o.split()[0].lower()) if isinstance(o, str) and o.strip() else None
         if _conv.empty or "conv_type" not in _conv.columns:
-            _coe = pd.DataFrame()
-        elif "owner" not in _conv.columns:
-            # view not yet updated with the 'owner' column — surface it instead of crashing
-            st.caption("⚠️ The conversions view needs updating (missing `owner`) — deploy the latest "
-                       "`sql/tab_cards.sql` and reboot.")
             _coe = pd.DataFrame()
         else:
             _coe = _conv[_conv["conv_type"] == "COE"].copy()
-            _coe["couns"] = _coe["owner"].map(_own2lbl)
-            _coe = _coe.dropna(subset=["couns"])
+            _coe["couns"] = _coe["calendar_name"].map(lambda n: _calname2lbl.get(n))
+            _coe = _coe[_coe["couns"].isin(_EDU_ROWS)]
         if not _coe.empty:
             _coe["_l"] = _coe["changed_date"].map(lambda x: _pk(x)[1])
             _tcoe = (_coe.groupby(["couns", "_l"]).size().unstack("_l", fill_value=0)
                      .reindex(index=_EDU_ROWS, columns=_cols, fill_value=0))
             st.dataframe(_tcoe, use_container_width=True, height=180)
         else:
-            st.caption("No COE conversions by these counsellors in range.")
-        st.caption("**COE conversions** (reached COE Received / Initial Received in L2C-Education or "
-                   "CLT-Onshore, or Won) — same as the Executive **Conversions → COE** drill — counted "
-                   "by the **opportunity owner** (assigned counsellor), dated by when COE was reached.")
+            st.caption("No COE conversions for these counsellors in range.")
+        st.caption("**COE conversions** (same as the Executive **Conversions → COE** drill) counted by "
+                   "the **counsellor whose calendar** the contact's appointment is on (education "
+                   "consultants), dated by when COE was reached.")

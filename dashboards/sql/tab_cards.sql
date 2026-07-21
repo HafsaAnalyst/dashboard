@@ -2126,13 +2126,13 @@ conv AS (
     -- bumped by ANY later edit (e.g. booking an appointment after COE), which
     -- mis-dated the COE into a later month and inflated the count (a COE reached
     -- in March but touched in June was counted as a June COE).
-    SELECT contact_id, assigned_user_id, pipeline_name, stage_name, status, conv_type, changed_date
+    SELECT contact_id, pipeline_name, stage_name, status, conv_type, changed_date
     FROM (
-        SELECT contact_id, assigned_user_id, pipeline_name, stage_name, status, conv_type, changed_date,
+        SELECT contact_id, pipeline_name, stage_name, status, conv_type, changed_date,
                ROW_NUMBER() OVER (PARTITION BY contact_id, conv_type
                                   ORDER BY changed_date DESC) AS rn
         FROM (
-            SELECT o.contact_id, o.assigned_user_id, p.pipeline_name, s.stage_name, o.status,
+            SELECT o.contact_id, p.pipeline_name, s.stage_name, o.status,
                    CASE WHEN p.pipeline_name = 'CLT - VISA' THEN 'POC' ELSE 'COE' END AS conv_type,
                    CAST(
                        CASE
@@ -2197,7 +2197,7 @@ SELECT cv.contact_id, c.email,
         ELSE 'Other / Unknown'
     END                                                                    AS source,
     cv.pipeline_name AS pipeline, cv.stage_name AS stage, cv.status, cv.changed_date,
-    cv.conv_type, dc.calendar_name AS calendar_name, u.full_name AS owner,
+    cv.conv_type, dc.calendar_name AS calendar_name,
     -- detailed source: campaign → utm_campaign → form/survey name → social channel
     COALESCE(
         NULLIF(ls.campaign, ''),
@@ -2209,7 +2209,6 @@ SELECT cv.contact_id, c.email,
     )                                                                      AS detail
 FROM conv cv
 JOIN fact_contacts c ON c.contact_id = cv.contact_id
-LEFT JOIN dim_users u ON u.user_id = cv.assigned_user_id
 LEFT JOIN ls   ON ls.contact_id = cv.contact_id
 LEFT JOIN chan cc ON cc.contact_id = cv.contact_id
 LEFT JOIN last_appt la ON la.contact_id = cv.contact_id
