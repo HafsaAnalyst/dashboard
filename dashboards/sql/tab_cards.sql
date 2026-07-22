@@ -1890,6 +1890,11 @@ SELECT
     CASE WHEN ch.created_date BETWEEN $since AND $until THEN ch.created_date
          WHEN ch.revived_date BETWEEN $since AND $until THEN ch.revived_date
          ELSE CAST(a.date_added + INTERVAL 10 HOUR AS DATE) END             AS lead_date,
+    -- The contact's ACTUAL creation date (AEST). Distinct from lead_date, which
+    -- is the cohort-ENTRY date (created / revived / booked in range) used for
+    -- appointment gating. Displayed as "Lead Created Date" so a lead created
+    -- before the window (e.g. created Jul 19, booked Jul 20) shows Jul 19.
+    ch.created_date                                                        AS created_date,
     ch.booked_in_range                                                     AS booked_in_range,
     CASE WHEN ch.created_date BETWEEN $since AND $until THEN 1 ELSE 0 END   AS is_created,
     CASE WHEN ch.revived_date BETWEEN $since AND $until

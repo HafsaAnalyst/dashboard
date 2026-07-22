@@ -5542,11 +5542,16 @@ if _active_tab == "Executive":
                 else:
                     v = None
                 return v if (pd.notna(v) and str(v) not in ("", "None")) else "—"
+            # Lead Created Date = the contact's ACTUAL creation date (created_date),
+            # NOT lead_date (cohort-entry date, which can be the appointment date for
+            # a lead created before the window). Fall back to lead_date if the view
+            # predates the created_date column.
+            _lcd = dd["created_date"] if "created_date" in dd.columns else dd["lead_date"]
             return pd.DataFrame({
                 "Email": dd["email"].fillna("(no email)").values,
                 "Source": dd["refined_source"].values,
                 "Platform": dd.apply(_plat, axis=1).values,
-                "Lead Created Date": pd.to_datetime(dd["lead_date"]).dt.strftime("%Y-%m-%d").values,
+                "Lead Created Date": pd.to_datetime(_lcd).dt.strftime("%Y-%m-%d").values,
                 "Appt Created Date": dd["appt_booked_date"].map(
                     lambda v: pd.to_datetime(v).strftime("%Y-%m-%d") if pd.notna(v) else "—").values,
                 "Appointment Status": appt.values,
@@ -7332,6 +7337,8 @@ if _active_tab == "Breakdown":
         _cols = ["contact_id", "refined_source", "email", "contact_name", "phone",
                  "social_platform", "query_channel", "calendar_name", "appt_booked",
                  "appt_showed", "appt_booked_date", "lead_date"]
+        if "created_date" in _e1b.columns:
+            _cols.append("created_date")
         bo = _opps.merge(_e1b[_cols], on="contact_id", how="inner")
         if bo.empty:
             st.info("No opportunities in this range.")
@@ -7368,11 +7375,13 @@ if _active_tab == "Breakdown":
                     v = (r.get("social_platform") if rs in ("Social media", "Paid Social")
                          else (r.get("query_channel") if rs == "Queries" else None))
                     return v if (pd.notna(v) and str(v) not in ("", "None")) else "—"
+                # actual contact creation date (falls back to lead_date pre-migration)
+                _lcd = dd["created_date"] if "created_date" in dd.columns else dd["lead_date"]
                 return pd.DataFrame({
                     "Email": dd["email"].fillna("(no email)").values,
                     "Source": dd["refined_source"].values,
                     "Platform": dd.apply(_plat, axis=1).values,
-                    "Lead Created Date": pd.to_datetime(dd["lead_date"]).dt.strftime("%Y-%m-%d").values,
+                    "Lead Created Date": pd.to_datetime(_lcd).dt.strftime("%Y-%m-%d").values,
                     "Appt Created Date": dd["appt_booked_date"].map(
                         lambda v: pd.to_datetime(v).strftime("%Y-%m-%d") if pd.notna(v) else "—").values,
                     "Appointment Status": appt.values,
