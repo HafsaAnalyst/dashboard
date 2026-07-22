@@ -7283,9 +7283,11 @@ if _active_tab == "WBR":
 # =====================================================================
 if _active_tab == "Breakdown":
     st.markdown(
-        "<div class='panel-title'>Breakdown — opportunities by source & counsellor"
+        "<div class='panel-title'>Breakdown — by source & counsellor"
         "<span class='hint'>L2C-Education · L2C-VISA · CLT-VISA · CLT-Onshore Admission · scoped to the selected range</span></div>",
         unsafe_allow_html=True)
+    _brk_by = st.segmented_control("Break down by", ["Opportunity", "Leads"],
+                                   key="brk_by_mode") or "Opportunity"
 
     _BRK_PIPES = ["L2C - Education", "L2C - VISA", "CLT - VISA", "CLT - Onshore Admission"]
 
@@ -7328,7 +7330,138 @@ if _active_tab == "Breakdown":
 
     _e1b = (_e1[~_e1["refined_source"].isin(["No Activity", "Queries"])]
             if not _e1.empty else _e1)
-    if _e1b.empty or _opps.empty:
+
+    # ---- shared: source rename + campaign→account map (unmapped Paid-Social drop) ----
+    _SR = {"Paid Social": "Paid Social", "Organic Search": "Organic Search",
+           "Social media": "Social Media", "Referral": "Referrals",
+           "Walk-in": "Walk-in", "Direct": "Direct"}
+
+    def _bck(s):
+        s = str(s or "").lower()
+        for _a, _b in (("%7c", "|"), ("%2f", "/"), ("%2b", "+"), ("%20", " "),
+                       ("%26", "&"), ("+", " ")):
+            s = s.replace(_a, _b)
+        return re.sub(r"[^a-z0-9]", "", s)
+    try:
+        _bcc = db_exec("SELECT DISTINCT campaign_name, account_label FROM ("
+                       "  SELECT campaign_name, account_label FROM fact_meta_daily "
+                       "  UNION ALL SELECT campaign_name, account_label FROM fact_meta_insights) "
+                       "WHERE COALESCE(campaign_name,'') <> ''").fetchall()
+        _bmap = {_bck(n): l for n, l in _bcc if l}
+        for _k, _l in fetch_meta_campaign_accounts().items():
+            _bmap.setdefault(_k, _l)
+    except Exception:
+        _bmap = {}
+
+    if _e1b.empty:
+        st.info("No leads or opportunities in this range.")
+    elif _brk_by == "Leads":
+        # =========================== LEADS MODE ===========================
+        # Base = Executive-scorecard leads: funnel (created/revived in range), email
+        # present, unmapped Paid-Social dropped. One row per contact — so the Leads
+        # total here reconciles with the Executive scorecard and with the "Lead"
+        # column shown in Opportunity mode.
+        lo = _e1b[((_e1b["is_created"] == 1) | (_e1b["is_revived"] == 1))
+                  & (_e1b["email"].fillna("").astype(str).str.strip() != "")].copy()
+        _pm = lo["refined_source"] == "Paid Social"
+        lo = lo[~_pm | lo["campaign"].map(lambda c: _bmap.get(_bck(c)) in ("Melbourne", "Sydney"))]
+        if lo.empty:
+            st.info("No leads in this range.")
+        else:
+            lo["src"] = lo["refined_source"].map(lambda s: _SR.get(s, "Others"))
+            lo["couns"] = lo["calendar_name"].map(lambda n: _brk_calname2lbl.get(n))
+            lo["is_booked"] = lo["appt_booked"] == 1
+            lo["is_showed"] = lo["appt_showed"] == 1
+            lo["is_lost"] = lo["status"].fillna("").astype(str).str.lower() == "lost"
+            _totL = int(lo["contact_id"].nunique())
+
+            def _brk_lead_detail(df):
+                dd = df.copy()
+                appt = dd.apply(lambda r: "Showed" if r["appt_showed"] == 1
+                                else ("Booked" if r["appt_booked"] == 1 else "—"), axis=1)
+                cal = dd.apply(lambda r: r["calendar_name"]
+                               if (r["appt_booked"] == 1 and pd.notna(r["calendar_name"])) else "—", axis=1)
+
+                def _plat(r):
+                    rs = r["refined_source"]
+                    v = (r.get("social_platform") if rs in ("Social media", "Paid Social")
+                         else (r.get("query_channel") if rs == "Queries" else None))
+                    return v if (pd.notna(v) and str(v) not in ("", "None")) else "—"
+                _lcd = dd["created_date"] if "created_date" in dd.columns else dd["lead_date"]
+                return pd.DataFrame({
+                    "Email": dd["email"].fillna("(no email)").values,
+                    "Source": dd["refined_source"].values,
+                    "Platform": dd.apply(_plat, axis=1).values,
+                    "Lead Created Date": pd.to_datetime(_lcd).dt.strftime("%Y-%m-%d").values,
+                    "Appt Created Date": dd["appt_booked_date"].map(
+                        lambda v: pd.to_datetime(v).strftime("%Y-%m-%d") if pd.notna(v) else "—").values,
+                    "Appointment Status": appt.values,
+                    "Calendar Name": cal.values,
+                    "Pipeline": dd["pipeline"].fillna("—").values,
+                    "Stage": dd["stage"].fillna("—").values,
+                    "Status": dd["status"].fillna("—").replace("", "—").values,
+                    "Name": dd["contact_name"].fillna("—").replace("", "—").values,
+                    "Phone": dd["phone"].fillna("—").replace("", "—").values,
+                })
+
+            st.caption(f"**{_totL:,} leads** in {' · '.join(_BRK_PIPES)} — Executive-scorecard leads "
+                       "(created/revived in range, email present, unmapped Paid dropped), one row per "
+                       "contact. **Lost Leads** = opportunity status is *Lost*; **Booked / Showed** = "
+                       "appointments booked / attended by those leads. Click a row to drill in.")
+
+            # ---- By source ----
+            st.markdown("#### 📊 By source — click a row to see its leads")
+            _bkL = lo[lo["is_booked"]].groupby("src")["contact_id"].nunique()
+            _shL = lo[lo["is_showed"]].groupby("src")["contact_id"].nunique()
+            _lsL = lo[lo["is_lost"]].groupby("src")["contact_id"].nunique()
+            _gs = lo.groupby("src").agg(leads=("contact_id", "nunique")).reset_index()
+            _gs["lost"] = _gs["src"].map(_lsL).fillna(0).astype(int)
+            _gs["booked"] = _gs["src"].map(_bkL).fillna(0).astype(int)
+            _gs["showed"] = _gs["src"].map(_shL).fillna(0).astype(int)
+            _gs["pct"] = (_gs["leads"] / _totL * 100).map(lambda v: f"{v:.0f}%")
+            _gs = (_gs.sort_values("leads", ascending=False).reset_index(drop=True)
+                   .rename(columns={"src": "Source", "leads": "Leads", "lost": "Lost Leads",
+                                    "booked": "Booked", "showed": "Showed", "pct": "% of leads"}))
+            _gs = _gs[["Source", "Leads", "Lost Leads", "Booked", "Showed", "% of leads"]]
+            for _c in ("Leads", "Lost Leads", "Booked", "Showed"):
+                _gs[_c] = _gs[_c].astype(int)
+            _sel_s = st.dataframe(_gs, hide_index=True, use_container_width=True,
+                                  on_select="rerun", selection_mode="single-row", key="brkL_src")
+            try:
+                _rs = (_sel_s.selection.get("rows") if _sel_s else None) or []
+                _pick_s = _gs.iloc[int(_rs[0])]["Source"] if _rs else None
+            except Exception:
+                _pick_s = None
+            if _pick_s:
+                _d = lo[lo["src"] == _pick_s].drop_duplicates(subset=["contact_id"])
+                st.markdown(f"**{_pick_s} · {len(_d):,} leads** (one row per lead)")
+                st.dataframe(_brk_lead_detail(_d), hide_index=True, use_container_width=True, height=420)
+
+            # ---- By counsellor (booked leads' appointment calendar) ----
+            st.markdown("#### 🗓️ By counsellor — click a row to see its leads")
+            _cb = lo[lo["couns"].isin(_BRK_CROWS)]
+            _shu = _cb[_cb["is_showed"]].groupby("couns")["contact_id"].nunique()
+            _gc = (_cb.groupby("couns").agg(booked=("contact_id", "nunique"))
+                   .reindex(_BRK_CROWS, fill_value=0).reset_index())
+            _gc["showed"] = _gc["couns"].map(_shu).fillna(0).astype(int)
+            _gc["pct"] = (_gc["booked"] / _totL * 100).map(lambda v: f"{v:.0f}%")
+            _gc = _gc.rename(columns={"couns": "Counsellor", "booked": "Booked leads",
+                                      "showed": "Showed", "pct": "% of leads"})
+            _gc["Booked leads"] = _gc["Booked leads"].astype(int); _gc["Showed"] = _gc["Showed"].astype(int)
+            _sel_c = st.dataframe(_gc, hide_index=True, use_container_width=True,
+                                  on_select="rerun", selection_mode="single-row", key="brkL_cal")
+            try:
+                _rc = (_sel_c.selection.get("rows") if _sel_c else None) or []
+                _pick_c = _gc.iloc[int(_rc[0])]["Counsellor"] if _rc else None
+            except Exception:
+                _pick_c = None
+            if _pick_c:
+                _d = lo[lo["couns"] == _pick_c].drop_duplicates(subset=["contact_id"])
+                st.markdown(f"**{_pick_c} · {len(_d):,} leads** (one row per lead)")
+                st.dataframe(_brk_lead_detail(_d), hide_index=True, use_container_width=True, height=420)
+            st.caption("Counsellor = the appointment calendar of a **booked** lead (leads without an "
+                       "appointment on a counsellor's calendar aren't shown here).")
+    elif _opps.empty:
         st.info("No opportunities in this range.")
     else:
         # join each opportunity to its contact's cohort row (scope = contact created /
