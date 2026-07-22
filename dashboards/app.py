@@ -7340,8 +7340,15 @@ if _active_tab == "Breakdown":
         if "created_date" in _e1b.columns:
             _cols.append("created_date")
         bo = _opps.merge(_e1b[_cols], on="contact_id", how="inner")
+        # Scope by the contact's LEAD CREATED DATE (created_date), not by
+        # appointment/form activity in range: a lead created before the window that
+        # only booked an appointment (or filled a form) here should NOT appear.
+        if not bo.empty:
+            _cdcol = "created_date" if "created_date" in bo.columns else "lead_date"
+            _cd = pd.to_datetime(bo[_cdcol]).dt.date
+            bo = bo[(_cd >= since) & (_cd <= until)].copy()
         if bo.empty:
-            st.info("No opportunities in this range.")
+            st.info("No opportunities with a Lead Created Date in this range.")
         else:
             bo["Owner"] = bo["assigned_user_id"].map(_owners).fillna("—").replace("", "—")
             _SR = {"Paid Social": "Paid Social", "Organic Search": "Organic Search",
@@ -7396,11 +7403,11 @@ if _active_tab == "Breakdown":
 
             _tot_uniq = int(bo["contact_id"].nunique())
             st.caption(f"**{_tot:,} opportunities** ({_tot_uniq:,} unique contacts) in "
-                       f"{' · '.join(_BRK_PIPES)} — scoped to the selected range (opportunity created, or "
-                       "its contact filled a form / booked an appointment in range). **Lead** = leads by "
-                       "the Executive-scorecard definition (created/revived, unmapped Paid dropped); "
-                       "**Opportunities** = unique contacts with an opp here; **Duplicate opps** = extra "
-                       "opportunities beyond one per contact. Click a row to drill in.")
+                       f"{' · '.join(_BRK_PIPES)} — scoped by **Lead Created Date** in the selected range "
+                       "(a lead created before the window that only booked an appointment here is excluded). "
+                       "**Lead** = leads by the Executive-scorecard definition (created/revived, unmapped "
+                       "Paid dropped); **Opportunities** = unique contacts with an opp here; **Duplicate "
+                       "opps** = extra opportunities beyond one per contact. Click a row to drill in.")
 
             # ---- Table 1 — by source (UNIQUE contacts) ----
             st.markdown("#### 📊 By source — click a row to see its opportunities")
