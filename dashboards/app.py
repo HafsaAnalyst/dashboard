@@ -7269,10 +7269,10 @@ if _active_tab == "WBR":
 if _active_tab == "Breakdown":
     st.markdown(
         "<div class='panel-title'>Breakdown — opportunities by source & counsellor"
-        "<span class='hint'>L2C-Education · L2C-VISA · CLT-VISA · scoped to the selected range</span></div>",
+        "<span class='hint'>L2C-Education · L2C-VISA · CLT-VISA · CLT-Onshore Admission · scoped to the selected range</span></div>",
         unsafe_allow_html=True)
 
-    _BRK_PIPES = ["L2C - Education", "L2C - VISA", "CLT - VISA"]
+    _BRK_PIPES = ["L2C - Education", "L2C - VISA", "CLT - VISA", "CLT - Onshore Admission"]
 
     # counsellor calendar_name -> "Firstname (service)" (same mapping as the WBR tab)
     def _brk_svc(nm):
