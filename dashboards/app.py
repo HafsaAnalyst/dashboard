@@ -3484,6 +3484,10 @@ def render_meta1_tab():
         d = df[df["refined_source"] == "Paid Social"].copy()
         if not d.empty and {"is_created", "is_revived"} <= set(d.columns):
             d = d[(d["is_created"] == 1) | (d["is_revived"] == 1)].copy()
+        # Contacts with no email aren't counted as leads (same rule as the
+        # Executive scorecard), so Paid Leads stays aligned across tabs.
+        if not d.empty and "email" in d.columns:
+            d = d[d["email"].fillna("").astype(str).str.strip() != ""].copy()
         d["campaign"] = d["campaign"].fillna("(no campaign)").replace("", "(no campaign)")
         d["_k"] = d["campaign"].map(_ckey)
         d["is_conv"] = d["contact_id"].isin(cids).astype(int)
@@ -5367,7 +5371,10 @@ if _active_tab == "Executive":
         _ps_ok = e1["campaign"].map(lambda c: _exmap.get(_exck(c)) in ("Melbourne", "Sydney"))
         e1 = e1[~_ps_mask | _ps_ok].copy()
         q_mask = e1["refined_source"] == "Queries"
-        leads_df = e1[~q_mask]
+        # Contacts with no email address aren't counted as leads (they can't be
+        # followed up as a real lead). Queries keep their own count untouched.
+        _has_email = e1["email"].fillna("").astype(str).str.strip() != ""
+        leads_df = e1[~q_mask & _has_email]
         n_leads = len(leads_df)
         n_queries = int(q_mask.sum())
         n_new = int(leads_df["is_created"].sum())
@@ -5388,10 +5395,11 @@ if _active_tab == "Executive":
             p_leads = p_queries = p_booked = p_showed = 0
         else:
             _qp = e1p["refined_source"] == "Queries"
-            p_leads = int((~_qp).sum())
+            _hep = e1p["email"].fillna("").astype(str).str.strip() != ""
+            p_leads = int((~_qp & _hep).sum())
             p_queries = int(_qp.sum())
-            p_booked = int(e1p.loc[~_qp, "appt_booked"].sum())
-            p_showed = int(e1p.loc[~_qp, "appt_showed"].sum())
+            p_booked = int(e1p.loc[~_qp & _hep, "appt_booked"].sum())
+            p_showed = int(e1p.loc[~_qp & _hep, "appt_showed"].sum())
 
         def _d(cur, pri):
             if not pri:
@@ -7069,6 +7077,8 @@ if _active_tab == "WBR":
     e1 = run_df("vw_exec1_lead_detail", {"since": _mstr, "until": _ustr, "city": "All"})
     if not e1.empty:
         e1 = e1[~e1["refined_source"].isin(["No Activity", "Queries"])].copy()
+        # no-email contacts aren't leads (same rule as the Executive scorecard)
+        e1 = e1[e1["email"].fillna("").astype(str).str.strip() != ""].copy()
 
     # campaign → ad account (Melbourne / Sydney) — SAME resolution as the Meta Ads
     # tab so WBR "Leads" reconcile with the Meta tab's GHL-leads-by-account:
@@ -7403,7 +7413,8 @@ if _active_tab == "Breakdown":
                     _bmap.setdefault(_k, _l)
             except Exception:
                 _bmap = {}
-            _ld = _e1b[(_e1b["is_created"] == 1) | (_e1b["is_revived"] == 1)].copy()
+            _ld = _e1b[((_e1b["is_created"] == 1) | (_e1b["is_revived"] == 1))
+                       & (_e1b["email"].fillna("").astype(str).str.strip() != "")].copy()
             _pm = _ld["refined_source"] == "Paid Social"
             _ld = _ld[~_pm | _ld["campaign"].map(lambda c: _bmap.get(_bck(c)) in ("Melbourne", "Sydney"))]
             _lead_by_src = (_ld.assign(src=_ld["refined_source"].map(lambda s: _SR.get(s, "Others")))
