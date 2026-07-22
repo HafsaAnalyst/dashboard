@@ -7353,6 +7353,21 @@ if _active_tab == "Breakdown":
     except Exception:
         _bmap = {}
 
+    # append a bottom "Total" row: sums every numeric column, label_col = "Total",
+    # and pct_col gets pct_value (share the totals represent). The row is selectable
+    # but the drills below guard against a "Total" pick.
+    def _brk_total(df, label_col, pct_col=None, pct_value=None):
+        row = {c: "" for c in df.columns}
+        row[label_col] = "Total"
+        for c in df.columns:
+            if c in (label_col, pct_col):
+                continue
+            if pd.api.types.is_numeric_dtype(df[c]):
+                row[c] = int(df[c].sum())
+        if pct_col is not None:
+            row[pct_col] = pct_value
+        return pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+
     if _e1b.empty:
         st.info("No leads or opportunities in this range.")
     elif _brk_by == "Leads":
@@ -7425,6 +7440,7 @@ if _active_tab == "Breakdown":
             _gs = _gs[["Source", "Leads", "Lost Leads", "Booked", "Showed", "% of leads"]]
             for _c in ("Leads", "Lost Leads", "Booked", "Showed"):
                 _gs[_c] = _gs[_c].astype(int)
+            _gs = _brk_total(_gs, "Source", "% of leads", "100%")
             _sel_s = st.dataframe(_gs, hide_index=True, use_container_width=True,
                                   on_select="rerun", selection_mode="single-row", key="brkL_src")
             try:
@@ -7432,7 +7448,7 @@ if _active_tab == "Breakdown":
                 _pick_s = _gs.iloc[int(_rs[0])]["Source"] if _rs else None
             except Exception:
                 _pick_s = None
-            if _pick_s:
+            if _pick_s and _pick_s != "Total":
                 _d = lo[lo["src"] == _pick_s].drop_duplicates(subset=["contact_id"])
                 st.markdown(f"**{_pick_s} · {len(_d):,} leads** (one row per lead)")
                 st.dataframe(_brk_lead_detail(_d), hide_index=True, use_container_width=True, height=420)
@@ -7448,6 +7464,8 @@ if _active_tab == "Breakdown":
             _gc = _gc.rename(columns={"couns": "Counsellor", "booked": "Booked leads",
                                       "showed": "Showed", "pct": "% of leads"})
             _gc["Booked leads"] = _gc["Booked leads"].astype(int); _gc["Showed"] = _gc["Showed"].astype(int)
+            _gc = _brk_total(_gc, "Counsellor", "% of leads",
+                             f"{int(_gc['Booked leads'].sum()) / _totL * 100:.0f}%")
             _sel_c = st.dataframe(_gc, hide_index=True, use_container_width=True,
                                   on_select="rerun", selection_mode="single-row", key="brkL_cal")
             try:
@@ -7455,7 +7473,7 @@ if _active_tab == "Breakdown":
                 _pick_c = _gc.iloc[int(_rc[0])]["Counsellor"] if _rc else None
             except Exception:
                 _pick_c = None
-            if _pick_c:
+            if _pick_c and _pick_c != "Total":
                 _d = lo[lo["couns"] == _pick_c].drop_duplicates(subset=["contact_id"])
                 st.markdown(f"**{_pick_c} · {len(_d):,} leads** (one row per lead)")
                 st.dataframe(_brk_lead_detail(_d), hide_index=True, use_container_width=True, height=420)
@@ -7582,6 +7600,7 @@ if _active_tab == "Breakdown":
             _gs = _gs[["Source", "Lead", "Opportunities", "Duplicate opps", "Booked", "% of opps"]]
             for _c in ("Lead", "Opportunities", "Duplicate opps", "Booked"):
                 _gs[_c] = _gs[_c].astype(int)
+            _gs = _brk_total(_gs, "Source", "% of opps", "100%")
             _sel_s = st.dataframe(_gs, hide_index=True, use_container_width=True,
                                   on_select="rerun", selection_mode="single-row", key="brk_src")
             try:
@@ -7589,7 +7608,7 @@ if _active_tab == "Breakdown":
                 _pick_s = _gs.iloc[int(_rs[0])]["Source"] if _rs else None
             except Exception:
                 _pick_s = None
-            if _pick_s:
+            if _pick_s and _pick_s != "Total":
                 _d = bo[bo["src"] == _pick_s].drop_duplicates(subset=["contact_id"])
                 st.markdown(f"**{_pick_s} · {len(_d):,} contacts** (one row per contact — duplicates removed)")
                 st.dataframe(_brk_detail(_d), hide_index=True, use_container_width=True, height=420)
@@ -7605,6 +7624,8 @@ if _active_tab == "Breakdown":
             _gc = _gc.rename(columns={"couns": "Counsellor", "uniq": "Opportunities",
                                       "showed": "Showed", "pct": "% of opps"})
             _gc["Opportunities"] = _gc["Opportunities"].astype(int); _gc["Showed"] = _gc["Showed"].astype(int)
+            _gc = _brk_total(_gc, "Counsellor", "% of opps",
+                             f"{int(_gc['Opportunities'].sum()) / _tot_uniq * 100:.0f}%")
             _sel_c = st.dataframe(_gc, hide_index=True, use_container_width=True,
                                   on_select="rerun", selection_mode="single-row", key="brk_cal")
             try:
@@ -7612,7 +7633,7 @@ if _active_tab == "Breakdown":
                 _pick_c = _gc.iloc[int(_rc[0])]["Counsellor"] if _rc else None
             except Exception:
                 _pick_c = None
-            if _pick_c:
+            if _pick_c and _pick_c != "Total":
                 _d = bo[bo["couns"] == _pick_c].drop_duplicates(subset=["contact_id"])
                 st.markdown(f"**{_pick_c} · {len(_d):,} contacts** (one row per contact — duplicates removed)")
                 st.dataframe(_brk_detail(_d), hide_index=True, use_container_width=True, height=420)
