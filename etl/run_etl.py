@@ -727,18 +727,35 @@ def run_etl(full_refresh: bool = False) -> None:
     con = init_database()
     try:
         summary = {}
-        summary.update(extract_ghl(con, since, until))
-        summary.update(rebuild_stage_observations(con))
-        summary.update(extract_meta(con, since, until))
-        summary.update(extract_ga4(con, since, until))
-        summary.update(extract_gsc(con, since, until))
-        summary.update(build_attribution_bridge(con, since, until))
-        summary.update(sync_latest_source(con, since, until))
-        summary.update(build_daily_rollups(con, since, until))
+        failed = []
+
+        # Isolate every step: a single connector/transform failure must NOT abort the
+        # whole run. Otherwise build_daily_rollups — which stamps agg_daily_kpis.
+        # last_refreshed (the dashboard's "Updated N ago") — never runs, and the
+        # dashboard goes fully stale even though most sources refreshed fine.
+        def _step(name, fn):
+            try:
+                summary.update(fn())
+            except Exception:
+                logger.exception("ETL step '%s' failed — continuing so the refresh still completes", name)
+                failed.append(name)
+
+        _step("ghl",                lambda: extract_ghl(con, since, until))
+        _step("stage_observations", lambda: rebuild_stage_observations(con))
+        _step("meta",               lambda: extract_meta(con, since, until))
+        _step("ga4",                lambda: extract_ga4(con, since, until))
+        _step("gsc",                lambda: extract_gsc(con, since, until))
+        _step("attribution_bridge", lambda: build_attribution_bridge(con, since, until))
+        _step("latest_source",      lambda: sync_latest_source(con, since, until))
+        # ALWAYS run the rollups last so last_refreshed advances every run — even when
+        # an upstream step above failed (partial-but-fresh beats fully stale).
+        _step("daily_rollups",      lambda: build_daily_rollups(con, since, until))
 
         logger.info("== ETL SUMMARY ==")
         for k, v in sorted(summary.items()):
             logger.info("  %-30s %d rows", k, v)
+        if failed:
+            logger.warning("ETL finished with %d FAILED step(s): %s", len(failed), ", ".join(failed))
     finally:
         con.close()
 
