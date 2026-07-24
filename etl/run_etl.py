@@ -198,6 +198,30 @@ def extract_ghl(con, since: str, until: str) -> dict:
         upsert_df(con, "fact_contacts", contacts_df, "contact_id")
         summary["fact_contacts"] = len(contacts_df)
 
+        # Contact tags (e.g. l2c-follow-up-1..5) — GHL returns the CURRENT tag list per
+        # contact (no per-tag timestamp). Store one row per (contact_id, tag) so the
+        # Follower Performance tab can flag opps whose contact was followed up. Refresh
+        # (delete-then-insert) tags for the contacts in THIS batch so removals show too.
+        try:
+            _tag_rows = [{"contact_id": c.get("id"), "tag": str(t).strip().lower()}
+                         for c in (contacts_raw or [])
+                         for t in (c.get("tags") or []) if c.get("id") and t]
+            con.execute("CREATE TABLE IF NOT EXISTS fact_contact_tags "
+                        "(contact_id VARCHAR, tag VARCHAR)")
+            if not contacts_df.empty:
+                con.register("_ct_batch", contacts_df[["contact_id"]])
+                con.execute("DELETE FROM fact_contact_tags WHERE contact_id "
+                            "IN (SELECT contact_id FROM _ct_batch)")
+                con.unregister("_ct_batch")
+            if _tag_rows:
+                _tags_df = pd.DataFrame(_tag_rows).drop_duplicates()
+                con.register("_ct_new", _tags_df)
+                con.execute("INSERT INTO fact_contact_tags SELECT contact_id, tag FROM _ct_new")
+                con.unregister("_ct_new")
+            summary["fact_contact_tags"] = len(_tag_rows)
+        except Exception as e:
+            logger.exception("Contact tags ingest failed: %s", e)
+
         # Opportunities
         opps_raw = ghl.fetch_opportunities(since, until)
         stage_name_by_id = dict(zip(dim_stages_df["stage_id"], dim_stages_df["stage_name"])) \

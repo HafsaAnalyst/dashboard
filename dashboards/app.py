@@ -6806,226 +6806,164 @@ if _active_tab == "Funnels":
 if _active_tab == "Follower Performance":
     st.markdown(
         "<div class='panel-title'>Follower Performance"
-        "<span class='hint'>employee activity by point-in-time stage</span></div>",
+        "<span class='hint'>L2C-Education / L2C-VISA · created & stage-change activity in range</span></div>",
         unsafe_allow_html=True)
 
     import altair as _alt
 
-    # This tab shows ONLY these employees, everywhere.
-    ALLOWED = ["Syeda Ume Abiha", "Tehreem Ghouri", "Ali Ijaz"]
-    # Drill-down source/notes lookup: leads worked now were created within ~18mo;
-    # bounding the range keeps vw_exec1_lead_detail from scanning all of history
-    # (that full scan was ~12s; bounded it's ~2s).
-    _SRC_SINCE = (until - timedelta(days=540)).isoformat()
+    # Owners (followers) tracked on this tab.
+    FP_OWNERS = ["Syeda Ume Abiha", "Ali Ijaz", "Tehreem Ghouri"]
 
-    # Tab-wide starting-pipeline filter (applies to scorecards + activity table).
-    _pipe_lbl = st.radio(
-        "Starting pipeline", ["All", "L2C - Education", "L2C - Skill Migration"],
-        horizontal=True, key="emp_act_pipeline")
+    _pipe_lbl = st.radio("Starting pipeline", ["All", "L2C - Education", "L2C - VISA"],
+                         horizontal=True, key="fp_pipeline")
+    _fp_pipes = ["L2C - Education", "L2C - VISA"] if _pipe_lbl == "All" else [_pipe_lbl]
+    _pp = ",".join(["?"] * len(_fp_pipes))
+    _s, _u = since.isoformat(), until.isoformat()
 
-    ea = run_df("vw_employee_activity",
-                {"since": since.isoformat(), "until": until.isoformat(),
-                 "pipeline": _pipe_lbl})
-    if not ea.empty and "employee" in ea.columns:
-        ea = ea[ea["employee"].isin(ALLOWED)].copy().reset_index(drop=True)
+    # ---- Opportunities CREATED in range (Total Opportunities + owner-table base) ----
+    _opps = db_exec(
+        f"SELECT o.opportunity_id, o.contact_id, o.assigned_user_id, "
+        f"       s.stage_name AS cur_stage, p.pipeline_name "
+        f"FROM fact_opportunities o "
+        f"JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id "
+        f"JOIN dim_stages s ON s.stage_id = o.stage_id "
+        f"WHERE p.pipeline_name IN ({_pp}) "
+        f"  AND CAST(o.created_at + INTERVAL 10 HOUR AS DATE) BETWEEN ? AND ?",
+        _fp_pipes + [_s, _u]).fetchdf()
+    total_opps = int(_opps["opportunity_id"].nunique()) if not _opps.empty else 0
 
-    if ea.empty:
-        st.info("No activity recorded in this duration for the selected pipeline "
-                "(or stage history hasn't been backfilled yet).")
+    # ---- Stage-change-in-range counts (ANY opp in the selected pipeline[s]) ----
+    def _fp_stage_change(stages):
+        _sp = ",".join(["?"] * len(stages))
+        try:
+            _r = db_exec(
+                f"SELECT COUNT(DISTINCT opportunity_id) FROM fact_opp_stage_events "
+                f"WHERE pipeline IN ({_pp}) AND new_stage IN ({_sp}) "
+                f"  AND CAST(changed_at + INTERVAL 10 HOUR AS DATE) BETWEEN ? AND ?",
+                _fp_pipes + stages + [_s, _u]).fetchone()
+            return int(_r[0]) if _r and _r[0] else 0
+        except Exception:
+            return 0
+    appt_booked = _fp_stage_change(["Appointment Booked", "MARA Appointment Booked"])
+    bls_cnt     = _fp_stage_change(["Booking Link Shared"])
+    no_show     = _fp_stage_change(["No Show"])
+
+    # ---- Follow Up: created-in-range opps whose contact has an l2c-follow-up-* tag ----
+    follow_up = None   # None => fact_contact_tags not populated yet (ETL not run)
+    try:
+        _r = db_exec(
+            f"SELECT COUNT(DISTINCT o.opportunity_id) "
+            f"FROM fact_opportunities o "
+            f"JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id "
+            f"JOIN fact_contact_tags t ON t.contact_id = o.contact_id "
+            f"     AND LOWER(t.tag) LIKE 'l2c-follow-up-%' "
+            f"WHERE p.pipeline_name IN ({_pp}) "
+            f"  AND CAST(o.created_at + INTERVAL 10 HOUR AS DATE) BETWEEN ? AND ?",
+            _fp_pipes + [_s, _u]).fetchone()
+        follow_up = int(_r[0]) if _r and _r[0] else 0
+    except Exception:
+        follow_up = None
+
+    # ---- owner mapping for the created-in-range opps ----
+    _owners = dict(db_exec("SELECT user_id, full_name FROM dim_users").fetchall())
+    if not _opps.empty:
+        _opps = _opps.copy()
+        _opps["Owner"] = _opps["assigned_user_id"].map(_owners).fillna("—")
+        _ot = _opps[_opps["Owner"].isin(FP_OWNERS)].copy()
     else:
-        # ===== Scorecards (replace the old funnel-by-follower table) =====
-        def _sum(col):
-            return int(ea[col].sum()) if col in ea.columns else 0
-        total_opps      = _sum("total_worked")
-        follow_up_total = (_sum("follow_up_1") + _sum("follow_up_2")
-                           + _sum("presales_1") + _sum("presales_2"))
-        booking_pending = _sum("booking_link_shared")
-        appt_booked     = _sum("appointment_booked")
-        no_show_total   = _sum("no_show")
+        _ot = _opps
 
-        CARD_VAL = {"total": total_opps, "followup": follow_up_total,
-                    "booking": booking_pending, "appt": appt_booked, "noshow": no_show_total}
-        CARD_LBL = {"total": "TOTAL OPPORTUNITIES", "followup": "FOLLOW UP",
-                    "booking": "BOOKING PENDING", "appt": "APPOINTMENT BOOKED",
-                    "noshow": "NO SHOW"}
-        CARD_HELP = {
-            "total":    "Distinct leads each employee performed an outbound activity on (= total worked).",
-            "followup": "Activity while the lead was in Follow up 1 / Follow up 2 / Pre Sales (1) / Pre Sales (2).",
-            "booking":  "Activity while the lead was in Booking Link Shared.",
-            "appt":     "Activity while the lead was in the L2C-Education Appointment Booked stage.",
-            "noshow":   "Activity while the lead was in No Show — click for the email list.",
-        }
-        active = st.session_state.get("fp_card", "total")
-        if active not in CARD_VAL:
-            active = "total"
+    # ---- Scorecards ----
+    _fu_txt = f"{follow_up:,}" if follow_up is not None else "—"
+    _cards = [("TOTAL OPPORTUNITIES", f"{total_opps:,}"),
+              ("FOLLOW UP", _fu_txt),
+              ("BOOKING LINK SHARED", f"{bls_cnt:,}"),
+              ("APPOINTMENT BOOKED", f"{appt_booked:,}"),
+              ("NO SHOW", f"{no_show:,}")]
+    for _col, (_lbl, _val) in zip(st.columns(5), _cards):
+        _col.metric(_lbl, _val)
+    if follow_up is None:
+        st.caption("⚠️ **Follow Up** will populate once the ETL has ingested contact tags "
+                   "(new `fact_contact_tags` table) — commit the ETL change and let it run.")
+    st.caption("**Total Opportunities / Follow Up** = opportunities **created** in the range "
+               "(L2C-Education / L2C-VISA). **Booking Link Shared / Appointment Booked / No Show** = "
+               "opportunities whose stage **changed to** that stage within the range (any opp; "
+               "Appointment Booked includes MARA Appointment Booked). **Follow Up** = a created-in-range "
+               "opp whose contact carries an `l2c-follow-up-N` tag.")
 
-        def _fp_card(col, key):
-            is_active = (key == active)
-            if col.button(f"{CARD_LBL[key]}\n\n{CARD_VAL[key]:,}",
-                          key=f"fp_card_{key}", use_container_width=True,
-                          type=("primary" if is_active else "secondary"),
-                          help=CARD_HELP[key]):
-                st.session_state["fp_card"] = key
-                st.rerun()
-        _cc = st.columns(5)
-        _fp_card(_cc[0], "total")
-        _fp_card(_cc[1], "followup")
-        _fp_card(_cc[2], "booking")
-        _fp_card(_cc[3], "appt")
-        _fp_card(_cc[4], "noshow")
-        st.caption("Click a scorecard to break it down by employee below. Counts are leads bucketed "
-                   "by the stage they were in **on the day** the employee acted on them (outbound only).")
-
-        # ---- Charts: scorecard totals (bar) + workload share by employee (pie) ----
-        _gb, _gp = st.columns([3, 2])
-        with _gb:
-            st.markdown("**Scorecard totals**")
-            _sort = ["Total Opportunities", "Follow Up", "Booking Pending",
-                     "Appointment Booked", "No Show"]
-            _m = pd.DataFrame({"Metric": _sort,
-                               "Count":  [total_opps, follow_up_total, booking_pending,
-                                          appt_booked, no_show_total]})
-            _bar = _alt.Chart(_m).mark_bar(cornerRadius=6, height=38).encode(
-                x=_alt.X("Count:Q", title=None,
-                         axis=_alt.Axis(grid=False, labels=False, ticks=False)),
-                y=_alt.Y("Metric:N", sort=_sort, title=None,
-                         axis=_alt.Axis(domain=False, ticks=False, labelFontSize=13)),
-                color=_alt.Color("Metric:N", legend=None,
-                                 scale=_alt.Scale(domain=_sort,
-                                                  range=["#4DA6FF", "#7A52CC", "#f6995c",
-                                                         "#2EAD8F", "#FF4D66"])),
-                tooltip=["Metric:N", "Count:Q"])
-            _lab = _alt.Chart(_m).mark_text(align="left", dx=6, fontSize=13,
-                                            fontWeight="bold", color="#1A1A1A").encode(
-                x="Count:Q", y=_alt.Y("Metric:N", sort=_sort), text="Count:Q")
-            st.altair_chart((_bar + _lab).properties(height=170).configure_view(strokeWidth=0),
-                            use_container_width=True)
-        with _gp:
-            st.markdown("**Workload by employee**")
-            _w = ea[["employee", "total_worked"]].copy()
-            _w = _w[_w["total_worked"] > 0]
+    # ---- Charts: bar (scorecard totals) + pie (opps by owner) ----
+    _gb, _gp = st.columns([3, 2])
+    with _gb:
+        st.markdown("**Scorecard totals**")
+        _order = ["Total Opportunities", "Follow Up", "Booking Link Shared",
+                  "Appointment Booked", "No Show"]
+        _m = pd.DataFrame({"Metric": _order,
+                           "Count": [total_opps, int(follow_up or 0), bls_cnt, appt_booked, no_show]})
+        _bar = _alt.Chart(_m).mark_bar(cornerRadius=6).encode(
+            x=_alt.X("Count:Q", title=None, axis=_alt.Axis(grid=False, labels=False, ticks=False)),
+            y=_alt.Y("Metric:N", sort=_order, title=None,
+                     axis=_alt.Axis(domain=False, ticks=False, labelFontSize=13)),
+            color=_alt.Color("Metric:N", legend=None,
+                             scale=_alt.Scale(domain=_order,
+                                              range=["#4DA6FF", "#7A52CC", "#f6995c",
+                                                     "#2EAD8F", "#FF4D66"])),
+            tooltip=["Metric:N", "Count:Q"])
+        _lab = _alt.Chart(_m).mark_text(align="left", dx=6, fontSize=13, fontWeight="bold",
+                                        color="#1A1A1A").encode(
+            x="Count:Q", y=_alt.Y("Metric:N", sort=_order), text="Count:Q")
+        st.altair_chart((_bar + _lab).properties(height=180).configure_view(strokeWidth=0),
+                        use_container_width=True)
+    with _gp:
+        st.markdown("**Opportunities by owner**")
+        if _ot.empty:
+            st.caption("No opportunities for these owners in range.")
+        else:
+            _w = (_ot.groupby("Owner")["opportunity_id"].nunique()
+                  .reindex(FP_OWNERS, fill_value=0).reset_index(name="opps"))
+            _w = _w[_w["opps"] > 0]
             if _w.empty:
-                st.caption("No workload to chart.")
+                st.caption("No opportunities for these owners in range.")
             else:
                 _pie = _alt.Chart(_w).mark_arc(innerRadius=45).encode(
-                    theta=_alt.Theta("total_worked:Q"),
-                    color=_alt.Color("employee:N", title="Employee"),
-                    tooltip=["employee:N", "total_worked:Q"])
-                st.altair_chart(_pie.properties(height=170), use_container_width=True)
+                    theta=_alt.Theta("opps:Q"),
+                    color=_alt.Color("Owner:N", title="Owner"),
+                    tooltip=["Owner:N", "opps:Q"])
+                st.altair_chart(_pie.properties(height=180), use_container_width=True)
 
-        # ---- Dynamic breakdown for the active scorecard ----
-        if active == "noshow":
-            # No Show drills to a by-follower summary + the EMAIL-level list.
-            st.markdown("##### No Show — by Follower / Owner")
-            _nb = ea[["employee", "no_show"]].copy().sort_values("no_show", ascending=False)
-            _nb = _nb.rename(columns={"employee": "Follower / Owner", "no_show": "No Show"})
-            st.dataframe(_nb, hide_index=True, use_container_width=True,
-                         height=min(320, 70 + 36 * len(_nb)))
+    # ---- Owner table: created-in-range opps by current stage ----
+    st.markdown("---")
+    st.markdown("#### 🧑‍💼 By owner — opportunities created in range, by current stage")
+    FP_BUCKETS = ["New Lead", "In Communication", "Booking Link Shared",
+                  "Appointment Booked", "No Show", "Later Stage"]
 
-            st.markdown("##### No Show — leads (by email) worked on while in No Show")
-            det = run_df("vw_employee_activity_detail",
-                         {"since": since.isoformat(), "until": until.isoformat(),
-                          "pipeline": _pipe_lbl})
-            if not det.empty:
-                det = det[det["employee"].isin(ALLOWED)
-                          & (det["stage_on_activity_date"] == "No Show")].copy()
-            if det.empty:
-                st.caption("No No-Show activity in this duration for the selected pipeline.")
-            else:
-                _src = run_df("vw_exec1_lead_detail",
-                              {"since": _SRC_SINCE, "until": until.isoformat()})
-                _smap = dict(zip(_src["contact_id"], _src["refined_source"])) if not _src.empty else {}
-                det = det.sort_values("act_date", ascending=False)
-                _ns = pd.DataFrame({
-                    "Email":         det["email"].fillna("—").values,
-                    "Name":          det["contact_name"].fillna("—").values,
-                    "Phone":         det["phone"].fillna("—").values,
-                    "Worked By":     det["employee"].fillna("—").values,
-                    "Source":        det["contact_id"].map(_smap).fillna("—").replace("", "—").values,
-                    "Activity Date": pd.to_datetime(det["act_date"]).dt.strftime("%d %b %Y").values,
-                }).drop_duplicates()
-                st.dataframe(_ns, hide_index=True, use_container_width=True,
-                             height=min(460, 70 + 36 * len(_ns)))
-                st.caption(f"{len(_ns):,} No-Show lead-days across the selected employees.")
-        else:
-            BREAKDOWN = {
-                "total":    (["total_worked"], {"total_worked": "Total Worked"}),
-                "followup": (["follow_up_1", "follow_up_2", "presales_1", "presales_2"],
-                             {"follow_up_1": "Follow up 1", "follow_up_2": "Follow up 2",
-                              "presales_1": "Pre Sales (1)", "presales_2": "Pre Sales (2)"}),
-                "booking":  (["booking_link_shared"],
-                             {"booking_link_shared": "Booking Link Shared"}),
-                "appt":     (["appointment_booked"], {"appointment_booked": "Appointment Booked"}),
-            }
-            _cols, _ren = BREAKDOWN[active]
-            st.markdown(f"##### {CARD_LBL[active].title()} — by Follower / Owner")
-            _bd = ea[["employee"] + _cols].copy().sort_values(_cols[0], ascending=False)
-            _bd = _bd.rename(columns={"employee": "Follower / Owner", **_ren})
-            st.dataframe(_bd, hide_index=True, use_container_width=True,
-                         height=min(320, 70 + 36 * len(_bd)))
+    def _fp_bucket(s):
+        s = str(s or "")
+        if s in ("Appointment Booked", "MARA Appointment Booked"):
+            return "Appointment Booked"
+        return s if s in FP_BUCKETS else "Later Stage"
 
-        # ===== Full activity matrix — every stage column =====
-        st.markdown("---")
-        st.markdown("#### 🧑‍💼 Activity by employee — leads worked on, by the stage they were in **that day**")
-        ea_disp = pd.DataFrame({
-            "Follower / Owner":    ea["employee"].fillna("—").values,
-            "Total Worked":        ea["total_worked"].astype(int).values,
-            "New Lead":            ea["new_lead"].astype(int).values,
-            "Follow up 1":         ea["follow_up_1"].astype(int).values,
-            "Follow up 2":         ea["follow_up_2"].astype(int).values,
-            "Pre Sales (1)":       ea["presales_1"].astype(int).values,
-            "Pre Sales (2)":       ea["presales_2"].astype(int).values,
-            "Booking Link Shared": ea["booking_link_shared"].astype(int).values,
-            "Appointment Booked":  ea["appointment_booked"].astype(int).values,
-            "Post Consultation":   ea["post_consultation"].astype(int).values,
-            "No Show":             ea["no_show"].astype(int).values,
-            "Later Stage":         ea["later_stage"].astype(int).values,
-        })
-        st.dataframe(ea_disp, hide_index=True, use_container_width=True,
-                     height=min(560, 70 + 36 * len(ea_disp)))
-        st.caption(
-            "Each row = an employee and the leads they **personally performed an outbound activity "
-            "on** (call / SMS / email / note) in the duration — credited to **who did the action** "
-            "(inbound “client reached out” is excluded). Each lead is counted under the stage it was "
-            "**in on the day the activity happened** (reconstructed from stage history), so a lead "
-            "worked on two days in two stages appears in both columns and **Total Worked** = sum of "
-            "the stage columns. **Appointment Booked** = the L2C-Education appointment-booked stage; "
-            "**Later Stage** = activity once the lead moved into any other stage / pipeline "
-            "(L2C-VISA, CLT-Onshore, MARA, Won, etc.).")
-
-        # ---- Drill-down: pick an employee → the leads + stage-on-activity-date ----
-        st.markdown("---")
-        pick = st.selectbox("Show leads worked on by",
-                            ["—"] + list(ea["employee"].fillna("—").values),
-                            key="emp_act_pick")
-        if pick and pick != "—":
-            det = run_df("vw_employee_activity_detail",
-                         {"since": since.isoformat(), "until": until.isoformat(),
-                          "pipeline": _pipe_lbl})
-            det = det[det["employee"] == pick].copy() if not det.empty else det
-            if det.empty:
-                st.caption("No leads for this employee in the duration.")
-            else:
-                _src = run_df("vw_exec1_lead_detail",
-                              {"since": _SRC_SINCE, "until": until.isoformat()})
-                _smap = dict(zip(_src["contact_id"], _src["refined_source"])) if not _src.empty else {}
-                _nmap = dict(zip(_src["contact_id"], _src["notes"]))          if not _src.empty else {}
-                det = det.sort_values("act_date", ascending=False)
-                out = pd.DataFrame({
-                    "Email":         det["email"].fillna("—").values,
-                    "Name":          det["contact_name"].fillna("—").values,
-                    "Phone":         det["phone"].fillna("—").values,
-                    "Source":        det["contact_id"].map(_smap).fillna("—").replace("", "—").values,
-                    "Start Pipeline": det["pipeline"].fillna("—").values,
-                    "Activity Date": pd.to_datetime(det["act_date"]).dt.strftime("%d %b %Y").values,
-                    "Stage That Day": det["stage_on_activity_date"].fillna("—").values,
-                    "Notes":         det["contact_id"].map(_nmap).fillna("—").values,
-                }).drop_duplicates()
-                st.dataframe(out, hide_index=True, use_container_width=True, height=460)
-                st.caption(f"{len(out):,} lead-days **{pick}** performed an outbound activity on. "
-                           "Stage That Day = the stage the lead was in on that activity date. "
-                           "Source = same refined-source logic as the Executive tab.")
-
+    if _ot.empty:
+        st.info("No opportunities created in this range for these owners.")
+    else:
+        _ot["bucket"] = _ot["cur_stage"].map(_fp_bucket)
+        _pv = (_ot.pivot_table(index="Owner", columns="bucket", values="opportunity_id",
+                               aggfunc="nunique", fill_value=0)
+               .reindex(index=FP_OWNERS, columns=FP_BUCKETS, fill_value=0))
+        _tot = _ot.groupby("Owner")["opportunity_id"].nunique().reindex(FP_OWNERS, fill_value=0)
+        _disp = pd.DataFrame({"Owner": FP_OWNERS})
+        _disp["Total Opportunities"] = _disp["Owner"].map(_tot).fillna(0).astype(int).values
+        for _b in FP_BUCKETS:
+            _disp[_b] = _pv[_b].astype(int).values
+        _trow = {"Owner": "Total", "Total Opportunities": int(_disp["Total Opportunities"].sum())}
+        for _b in FP_BUCKETS:
+            _trow[_b] = int(_disp[_b].sum())
+        _disp = pd.concat([_disp, pd.DataFrame([_trow])], ignore_index=True)
+        st.dataframe(_disp, hide_index=True, use_container_width=True,
+                     height=min(320, 70 + 36 * len(_disp)))
+        st.caption("Owner = the opportunity's assigned user. Counts = opportunities **created in the "
+                   "range** (L2C-Education / L2C-VISA) owned by each person, bucketed by their "
+                   "**current** stage. **Later Stage** = any stage beyond these (Cold Leads, Post "
+                   "Consultation, COE, 50% Fee, etc.).")
 
 # =====================================================================
 # WBR — Weekly Business Review (independent of the global date filter)
