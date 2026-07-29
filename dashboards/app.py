@@ -5742,7 +5742,6 @@ if _active_tab == "Executive":
                 summ = pd.DataFrame({
                     "Source": _sx["Source"].values,
                     "Leads": _sx["Leads"].astype(int).values,
-                    "Lost Leads": _lost_col.values,
                     "Booked": _bk_txt,
                     "Showed": _sh_txt,
                     "% of Leads": ((_sx["Leads"] / _tot * 100) if _tot else _sx["Leads"] * 0)
@@ -5780,12 +5779,12 @@ if _active_tab == "Executive":
                     _cbar = (_altp.Chart(_clong).mark_bar(cornerRadius=2).encode(
                         x=_altp.X("Source:N", sort=_src_order, title=None,
                                   axis=_altp.Axis(labelAngle=0, labelFontSize=12)),
-                        xOffset=_altp.XOffset("Metric:N", sort=_metrics),
-                        y=_altp.Y("Count:Q", title=None),
+                        y=_altp.Y("Count:Q", title=None, stack=True),
                         color=_altp.Color("Metric:N", sort=_metrics,
                                           scale=_altp.Scale(domain=_metrics,
                                                             range=["#4DA6FF", "#FF4D66", "#2EAD8F", "#7A52CC"]),
                                           legend=_altp.Legend(title=None, orient="top")),
+                        order=_altp.Order("Metric:N", sort="ascending"),
                         tooltip=["Source:N", "Metric:N", "Count:Q"])
                         .properties(height=300).configure_view(strokeWidth=0))
                     st.altair_chart(_cbar, use_container_width=True)
