@@ -5385,12 +5385,23 @@ if _active_tab == "Executive":
         cur_showed = int(leads_df["appt_showed"].sum())
         q_booked = int(e1.loc[q_mask, "appt_booked"].sum())
 
+        # Drop no-email leads from every non-Query view (the by-source table, its
+        # drills and the charts all derive from e1) so they match the Leads
+        # scorecard — a lead with no email isn't a real lead. Queries keep no-email
+        # (often anonymous DMs) so their separate count is untouched.
+        e1 = e1[(e1["refined_source"] == "Queries")
+                | (e1["email"].fillna("").astype(str).str.strip() != "")].copy()
+        q_mask = e1["refined_source"] == "Queries"
+
         # ---- prior period (for the vs-last comparison) ----
         e1p = run_df("vw_exec1_lead_detail",
                      {"since": prior_since.isoformat(), "until": prior_until.isoformat()})
         if not e1p.empty:   # same funnel rule for the vs-last comparison
             _qp0 = e1p["refined_source"] == "Queries"
             e1p = e1p[((e1p["is_created"] == 1) | (e1p["is_revived"] == 1)) | _qp0].copy()
+            # same no-email exclusion as the current period (keep Queries)
+            e1p = e1p[(e1p["refined_source"] == "Queries")
+                      | (e1p["email"].fillna("").astype(str).str.strip() != "")].copy()
         if e1p.empty:
             p_leads = p_queries = p_booked = p_showed = 0
         else:
