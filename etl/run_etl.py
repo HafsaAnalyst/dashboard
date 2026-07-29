@@ -192,9 +192,19 @@ def extract_ghl(con, since: str, until: str) -> dict:
             upsert_df(con, "dim_users", users_df, "user_id")
             summary["dim_users"] = len(users_df)
 
+        # Custom-field id → key map (resolves the UTM Parameters custom fields on
+        # contacts: utm_source / utm_medium / utm_campaign — the reliable GBP/GMB
+        # Google-organic signal).
+        cf_key_by_id = {}
+        for _f in (ghl.fetch_custom_fields() or []):
+            _fid = _f.get("id")
+            _key = (_f.get("fieldKey") or _f.get("name") or "")
+            if _fid and _key:
+                cf_key_by_id[_fid] = str(_key).lower()
+
         # Contacts — must come before opportunities for FK lookups
         contacts_raw = ghl.fetch_contacts(since, until)
-        contacts_df = normalize.normalize_contacts(contacts_raw)
+        contacts_df = normalize.normalize_contacts(contacts_raw, cf_key_by_id)
         upsert_df(con, "fact_contacts", contacts_df, "contact_id")
         summary["fact_contacts"] = len(contacts_df)
 

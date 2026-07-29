@@ -237,8 +237,16 @@ def normalize_calendars(raw: list[dict], users: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def normalize_contacts(raw: list[dict]) -> pd.DataFrame:
-    """fact_contacts."""
+def normalize_contacts(raw: list[dict], cf_key_by_id: dict | None = None) -> pd.DataFrame:
+    """fact_contacts.
+
+    cf_key_by_id maps a custom-field ID → its readable key (e.g. 'contact.utm_medium')
+    so we can read the UTM Parameters custom fields (utm_source / utm_medium /
+    utm_campaign). Those UTMs are the reliable Google-organic (GBP/GMB) signal — the
+    contact's attribution object often shows a session source of 'Referral'/'Direct'
+    instead — so we fold utm_campaign into attribution_campaign and an organic/gbp/gmb
+    utm_medium into the attribution medium, which the dashboard already reads."""
+    cf_key_by_id = cf_key_by_id or {}
     rows = []
     def _medium(attr: dict) -> str | None:
         # GHL attribution objects carry medium as one of: medium, utmMedium,
@@ -252,14 +260,27 @@ def normalize_contacts(raw: list[dict]) -> pd.DataFrame:
         attrs = c.get("attributions") or []
         first_attr = attrs[0] if attrs else {}
         last_attr = attrs[-1] if attrs else {}
-        # visa_type from custom fields if any
+        # visa_type + UTM custom fields ("UTM Parameters" folder). The contact's
+        # customFields are [{id, value}]; resolve id → key via cf_key_by_id.
         visa = None
+        cf_utm_source = cf_utm_medium = cf_utm_campaign = None
         for cf in c.get("customFields", []) or []:
-            cf_id = (cf.get("id") or "").lower()
-            cf_val = cf.get("value")
-            if "visa" in cf_id or "visa_type" in cf_id:
-                visa = _to_str(cf_val); break
+            key = cf_key_by_id.get(cf.get("id"), cf.get("id") or "").lower()
+            val = _to_str(cf.get("value") if cf.get("value") is not None else cf.get("fieldValue"))
+            if not val:
+                continue
+            if "utm_source" in key:
+                cf_utm_source = val
+            elif "utm_medium" in key:
+                cf_utm_medium = val
+            elif "utm_campaign" in key:
+                cf_utm_campaign = val
+            elif "visa" in key:
+                visa = val
         src = c.get("source")
+        # A Google-organic (GBP/GMB) utm_medium from the custom field is the reliable
+        # signal — prefer it over the attribution's session medium (often 'Referral').
+        _org_med = cf_utm_medium if (cf_utm_medium or "").lower() in ("organic", "gbp", "gmb") else None
         rows.append({
             "contact_id": _to_str(c.get("id")),
             "contact_name": c.get("contactName"),
@@ -272,16 +293,20 @@ def normalize_contacts(raw: list[dict]) -> pd.DataFrame:
             "assigned_user_id": _to_str(c.get("assignedTo")),
             "first_attribution_source": first_attr.get("utmSessionSource") or first_attr.get("source"),
             "latest_attribution_source": last_attr.get("utmSessionSource") or last_attr.get("source"),
-            "first_attribution_medium": _medium(first_attr),
+            "first_attribution_medium": _org_med or _medium(first_attr),
             "first_attribution_form": _form(first_attr),
-            "latest_attribution_medium": _medium(last_attr),
+            "latest_attribution_medium": _org_med or _medium(last_attr),
             "latest_attribution_form": _form(last_attr),
-            # campaign from the attribution (Facebook Lead Form etc.) — GHL stores
-            # it as utmCampaign on contact attributions. Prefer latest, then first.
+            # campaign from the attribution (Facebook Lead Form etc.) — GHL stores it
+            # as utmCampaign on contact attributions. Prefer that, then the attribution
+            # `campaign`, then the utm_campaign CUSTOM FIELD (gmb_consultation /
+            # gbp_profile) — the last catches Google-organic leads whose attribution
+            # object doesn't carry the campaign.
             "attribution_campaign": (last_attr.get("utmCampaign")
                                      or first_attr.get("utmCampaign")
                                      or last_attr.get("campaign")
-                                     or first_attr.get("campaign")),
+                                     or first_attr.get("campaign")
+                                     or cf_utm_campaign),
             "country": c.get("country"),
             "city": c.get("city"),
             "visa_type": visa,

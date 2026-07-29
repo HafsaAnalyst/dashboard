@@ -93,6 +93,28 @@ def fetch_calendars() -> list[dict]:
     return cals
 
 
+def fetch_custom_fields() -> list[dict]:
+    """Contact custom-field DEFINITIONS (id, name, fieldKey, dataType). A contact's
+    customFields come back as [{id, value}] with only the field ID, so this map lets
+    the ETL resolve them to readable keys (e.g. utm_source / utm_medium / utm_campaign)."""
+    try:
+        r = requests.get(
+            f"{BASE_URL}/locations/{_location_id()}/customFields",
+            headers=_headers(),
+            params={"model": "contact"},
+            timeout=HTTP_TIMEOUT,
+        )
+        if r.status_code != 200:
+            logger.error("GHL custom fields HTTP %d: %s", r.status_code, r.text[:200])
+            return []
+        fields = r.json().get("customFields", []) or []
+        logger.info("GHL custom fields: %d", len(fields))
+        return fields
+    except Exception as e:
+        logger.exception("GHL custom fields fetch failed: %s", e)
+        return []
+
+
 def fetch_contacts(since: str, until: Optional[str] = None) -> list[dict]:
     """Contacts with dateAdded in [since, until]. Filtered in memory because
     /contacts/ doesn't expose a server-side date filter — paginated DESC by

@@ -5,7 +5,12 @@ name: ETL refresh
 on:
   schedule:
     - cron: "0 * * * *"    # every hour, on the hour, UTC
-  workflow_dispatch: {}      # manual "Run workflow" button
+  workflow_dispatch:         # manual "Run workflow" button
+    inputs:
+      since:
+        description: "Backfill contacts/data from this date (YYYY-MM-DD). Blank = normal 2-day incremental."
+        required: false
+        default: ""
 
 # Never let two ETL runs write to MotherDuck at the same time.
 concurrency:
@@ -48,4 +53,10 @@ jobs:
           GA4_SERVICE_ACCOUNT_FILE: ga4_sa.json
           GSC_SITE_URL: ${{ secrets.GSC_SITE_URL }}
           GSC_SERVICE_ACCOUNT_FILE: gsc_sa.json
-        run: python etl/run_etl.py
+        run: |
+          if [ -n "${{ github.event.inputs.since }}" ]; then
+            echo "Backfill run from ${{ github.event.inputs.since }}"
+            python etl/run_etl.py --since "${{ github.event.inputs.since }}"
+          else
+            python etl/run_etl.py
+          fi
