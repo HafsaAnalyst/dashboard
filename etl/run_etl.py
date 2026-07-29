@@ -208,6 +208,22 @@ def extract_ghl(con, since: str, until: str) -> dict:
         upsert_df(con, "fact_contacts", contacts_df, "contact_id")
         summary["fact_contacts"] = len(contacts_df)
 
+        # Self-check (safe to remove later): how many of the fetched contacts resolved
+        # to a Google-organic (GBP/GMB/organic) attribution after folding the UTM
+        # custom fields — lets a backfill run verify the gmb/gbp reclassification
+        # straight from the Actions log, without querying the database.
+        try:
+            _ac = contacts_df["attribution_campaign"].fillna("").astype(str).str.lower()
+            _lm = contacts_df["latest_attribution_medium"].fillna("").astype(str).str.lower()
+            _fm = contacts_df["first_attribution_medium"].fillna("").astype(str).str.lower()
+            _org = (_ac.str.startswith("gmb") | _ac.str.startswith("gbp")
+                    | _lm.isin(["organic", "gbp", "gmb"]) | _fm.isin(["organic", "gbp", "gmb"]))
+            logger.info("  UTM fold: %d of %d contacts are Google-organic (GBP/GMB/organic); "
+                        "utm custom-field keys mapped: %d",
+                        int(_org.sum()), len(contacts_df), len(cf_key_by_id))
+        except Exception as e:
+            logger.warning("UTM fold self-check skipped: %s", e)
+
         # Contact tags (e.g. l2c-follow-up-1..5) — GHL returns the CURRENT tag list per
         # contact (no per-tag timestamp). Store one row per (contact_id, tag) so the
         # Follower Performance tab can flag opps whose contact was followed up. Refresh
