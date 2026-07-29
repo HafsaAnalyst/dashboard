@@ -44,6 +44,10 @@ DB_PATH = ROOT / "data" / "migration_dashboard.duckdb"
 SCHEMA_PATH = ROOT / "models" / "schema.sql"
 FULL_REFRESH_START = "2024-01-01"
 INCREMENTAL_DAYS = 2  # overlap window for late-arriving data
+# ONE-TIME backfill floor: while set, every incremental (scheduled) run also re-fetches
+# from this date, so existing older contacts get their UTM attribution (GBP/GMB/organic)
+# repopulated from the custom fields. SET BACK TO None once one run has completed green.
+BACKFILL_SINCE = "2026-07-01"
 META_DAILY_LOOKBACK = 30  # re-fetch this many days of Meta daily spend each run
                           # (spend retro-updates; fills skipped days)
 GSC_LOOKBACK = 14         # re-fetch this many days of GSC each run (data lands
@@ -771,6 +775,9 @@ def run_etl(full_refresh: bool = False) -> None:
         logger.info("FULL REFRESH from %s to %s", since, today)
     else:
         since = (datetime.now() - timedelta(days=INCREMENTAL_DAYS)).strftime("%Y-%m-%d")
+        if BACKFILL_SINCE:                       # one-time UTM-attribution backfill
+            since = min(since, BACKFILL_SINCE)
+            logger.info("BACKFILL floor active: re-fetching from %s", BACKFILL_SINCE)
         logger.info("INCREMENTAL from %s to %s", since, today)
     until = today
 
