@@ -5335,6 +5335,15 @@ if _active_tab == "Executive":
     if e1.empty:
         st.info("No leads created or revived in this window.")
     else:
+        # City + Owner for the lead drill table (contact's city + assigned user).
+        try:
+            _ci = db_exec("SELECT contact_id, city, assigned_user_id FROM fact_contacts").fetchdf()
+            _own_map = dict(db_exec("SELECT user_id, full_name FROM dim_users").fetchall())
+            _ci["Owner"] = _ci["assigned_user_id"].map(_own_map)
+            e1 = e1.merge(_ci[["contact_id", "city", "Owner"]], on="contact_id", how="left")
+        except Exception:
+            e1["city"] = None
+            e1["Owner"] = None
         e1["booked_in_range"] = e1["booked_in_range"].fillna(False).astype(bool)
         # 'No Activity' = bare CRM records (no form/conversation/pipeline/appt/
         # payment) — never counted as leads. Drop them up front.
@@ -5570,6 +5579,10 @@ if _active_tab == "Executive":
                 "Pipeline": dd["pipeline"].fillna("—").values,
                 "Stage": dd["stage"].fillna("—").values,
                 "Status": dd["status"].fillna("—").replace("", "—").values,
+                "Owner": (dd["Owner"] if "Owner" in dd.columns
+                          else pd.Series("—", index=dd.index)).fillna("—").replace("", "—").values,
+                "City": (dd["city"] if "city" in dd.columns
+                         else pd.Series("—", index=dd.index)).fillna("—").replace("", "—").values,
                 "Name": dd["contact_name"].fillna("—").replace("", "—").values,
                 "Phone": dd["phone"].fillna("—").replace("", "—").values,
             })

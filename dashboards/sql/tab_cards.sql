@@ -1928,7 +1928,14 @@ SELECT
         ELSE 'Other social'
     END                                                                    AS social_platform,
     CASE
-        WHEN COALESCE(ls.campaign,'') <> '' OR ls.event_source = 'Paid Social'      THEN 'Paid Social'
+        -- A form/attribution campaign means Paid Social — EXCEPT a Google-organic
+        -- campaign (gmb_consultation / gbp_profile), which is organic. Excluding it
+        -- here lets those leads fall through to the Organic Search branch below
+        -- instead of being mislabelled Paid Social off the appointment-form campaign.
+        WHEN ls.event_source = 'Paid Social'
+             OR (COALESCE(ls.campaign,'') <> ''
+                 AND LOWER(ls.campaign) NOT LIKE 'gmb%'
+                 AND LOWER(ls.campaign) NOT LIKE 'gbp%')                     THEN 'Paid Social'
         -- LEAD QUALIFICATION: a contact with NO form, NO appointment, NOT in any
         -- pipeline and NO payment is an inquiry, not a lead. With a real inbound
         -- conversation -> Queries; otherwise -> No Activity. This overrides bare
@@ -1979,7 +1986,14 @@ SELECT
              -- google + utm_medium=organic + utm_campaign=gmb_consultation) — captured
              -- even when there is no form page_url to parse.
              OR LOWER(COALESCE(ch.latest_attribution_medium,'')) IN ('gbp', 'gmb', 'organic')
-             OR LOWER(COALESCE(ch.first_attribution_medium,''))  IN ('gbp', 'gmb', 'organic')  THEN 'Organic Search'
+             OR LOWER(COALESCE(ch.first_attribution_medium,''))  IN ('gbp', 'gmb', 'organic')
+             -- ...and the FORM submission's own campaign / page_url utm_campaign
+             -- (gmb_consultation / gbp_profile). These live in fact_form_submissions,
+             -- already in the warehouse, so gmb/gbp leads classify with no ETL backfill.
+             OR LOWER(COALESCE(ls.campaign,'')) LIKE 'gmb%'
+             OR LOWER(COALESCE(ls.campaign,'')) LIKE 'gbp%'
+             OR LOWER(regexp_extract(ls.page_url,'utm_campaign=([^&]+)',1)) LIKE 'gmb%'
+             OR LOWER(regexp_extract(ls.page_url,'utm_campaign=([^&]+)',1)) LIKE 'gbp%'  THEN 'Organic Search'
         WHEN ls.event_source = 'Organic Search'                                     THEN 'Organic Search'
         WHEN ls.event_source = 'Referral' AND (
                  LOWER(regexp_extract(ls.page_url,'utm_source=([^&]+)',1))
@@ -2113,7 +2127,11 @@ SELECT
      OR LOWER(regexp_extract(ls.page_url,'utm_medium=([^&]+)',1))
             IN ('gbp', 'gmb', 'organic')
      OR LOWER(COALESCE(ch.latest_attribution_medium,'')) IN ('gbp', 'gmb', 'organic')
-     OR LOWER(COALESCE(ch.first_attribution_medium,''))  IN ('gbp', 'gmb', 'organic')) AS is_google_organic,
+     OR LOWER(COALESCE(ch.first_attribution_medium,''))  IN ('gbp', 'gmb', 'organic')
+     OR LOWER(COALESCE(ls.campaign,'')) LIKE 'gmb%'
+     OR LOWER(COALESCE(ls.campaign,'')) LIKE 'gbp%'
+     OR LOWER(regexp_extract(ls.page_url,'utm_campaign=([^&]+)',1)) LIKE 'gmb%'
+     OR LOWER(regexp_extract(ls.page_url,'utm_campaign=([^&]+)',1)) LIKE 'gbp%') AS is_google_organic,
     (qmo.contact_id IS NOT NULL)                                           AS is_query_only,
     ls.form_name                                                           AS form_name,
     ch.visa_type                                                           AS visa
