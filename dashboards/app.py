@@ -5774,6 +5774,8 @@ if _active_tab == "Executive":
                 _src_order = _clz["Source"].tolist()           # already sorted by Leads desc
                 _metrics = ["Leads", "Lost Leads", "Booked", "Showed"]
                 _clong = _clz.melt("Source", value_vars=_metrics, var_name="Metric", value_name="Count")
+                # stack order (bottom→top): Leads, Lost Leads, Booked, Showed
+                _clong["_mo"] = _clong["Metric"].map({m: i for i, m in enumerate(_metrics)})
                 if not _clong.empty and _clong["Count"].sum() > 0:
                     st.markdown("**Leads · Lost Leads · Booked · Showed — by source**")
                     _cbar = (_altp.Chart(_clong).mark_bar(cornerRadius=2).encode(
@@ -5784,7 +5786,7 @@ if _active_tab == "Executive":
                                           scale=_altp.Scale(domain=_metrics,
                                                             range=["#4DA6FF", "#FF4D66", "#2EAD8F", "#7A52CC"]),
                                           legend=_altp.Legend(title=None, orient="top")),
-                        order=_altp.Order("Metric:N", sort="ascending"),
+                        order=_altp.Order("_mo:Q", sort="ascending"),
                         tooltip=["Source:N", "Metric:N", "Count:Q"])
                         .properties(height=300).configure_view(strokeWidth=0))
                     st.altair_chart(_cbar, use_container_width=True)
