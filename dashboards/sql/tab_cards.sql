@@ -1765,6 +1765,7 @@ cohort AS (
     SELECT c.contact_id, c.email, c.contact_name, c.phone, c.visa_type,
            c.attribution_campaign, c.source AS raw_source,
            c.first_attribution_source, c.latest_attribution_source, c.canonical_source,
+           c.first_attribution_medium, c.latest_attribution_medium,
            CAST(c.date_added + INTERVAL 10 HOUR AS DATE)  AS created_date,
            CAST(s.last_sub  + INTERVAL 10 HOUR AS DATE)   AS revived_date,
            air.contact_id IS NOT NULL                     AS booked_in_range
@@ -1936,6 +1937,13 @@ SELECT
         WHEN ls.contact_id IS NULL AND a.contact_id IS NULL
              AND lo.pipeline_name IS NULL AND pe.contact_id IS NULL
              AND COALESCE(ch.canonical_source,'') NOT IN ('meta_paid','organic_seo','website_form')
+             -- ...unless it's a Google-organic (GBP/GMB/organic) contact — those are
+             -- real organic leads (e.g. a GMB "consultation" click) and must fall
+             -- through to the Organic Search branch below, not become No Activity.
+             AND NOT (LOWER(COALESCE(ch.attribution_campaign,'')) LIKE 'gbp%'
+                      OR LOWER(COALESCE(ch.attribution_campaign,'')) LIKE 'gmb%'
+                      OR LOWER(COALESCE(ch.latest_attribution_medium,'')) IN ('gbp','gmb','organic')
+                      OR LOWER(COALESCE(ch.first_attribution_medium,''))  IN ('gbp','gmb','organic'))
            THEN (CASE WHEN cc.channel IS NOT NULL AND cc.channel <> 'Email'
                       THEN 'Queries' ELSE 'No Activity' END)
         -- Facebook (conversation channel OR form referrer/utm) -> Paid Social
@@ -1966,7 +1974,12 @@ SELECT
         WHEN LOWER(COALESCE(ch.attribution_campaign,'')) LIKE 'gbp%'
              OR LOWER(COALESCE(ch.attribution_campaign,'')) LIKE 'gmb%'
              OR LOWER(regexp_extract(ls.page_url,'utm_medium=([^&]+)',1))
-                    IN ('gbp', 'gmb', 'organic')                                     THEN 'Organic Search'
+                    IN ('gbp', 'gmb', 'organic')
+             -- contact-level attribution (utm_medium=organic/gbp/gmb, e.g. utm_source=
+             -- google + utm_medium=organic + utm_campaign=gmb_consultation) — captured
+             -- even when there is no form page_url to parse.
+             OR LOWER(COALESCE(ch.latest_attribution_medium,'')) IN ('gbp', 'gmb', 'organic')
+             OR LOWER(COALESCE(ch.first_attribution_medium,''))  IN ('gbp', 'gmb', 'organic')  THEN 'Organic Search'
         WHEN ls.event_source = 'Organic Search'                                     THEN 'Organic Search'
         WHEN ls.event_source = 'Referral' AND (
                  LOWER(regexp_extract(ls.page_url,'utm_source=([^&]+)',1))
@@ -2098,7 +2111,9 @@ SELECT
     (LOWER(COALESCE(ch.attribution_campaign,'')) LIKE 'gbp%'
      OR LOWER(COALESCE(ch.attribution_campaign,'')) LIKE 'gmb%'
      OR LOWER(regexp_extract(ls.page_url,'utm_medium=([^&]+)',1))
-            IN ('gbp', 'gmb', 'organic'))                                  AS is_google_organic,
+            IN ('gbp', 'gmb', 'organic')
+     OR LOWER(COALESCE(ch.latest_attribution_medium,'')) IN ('gbp', 'gmb', 'organic')
+     OR LOWER(COALESCE(ch.first_attribution_medium,''))  IN ('gbp', 'gmb', 'organic')) AS is_google_organic,
     (qmo.contact_id IS NOT NULL)                                           AS is_query_only,
     ls.form_name                                                           AS form_name,
     ch.visa_type                                                           AS visa
