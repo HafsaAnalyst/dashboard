@@ -5335,11 +5335,26 @@ if _active_tab == "Executive":
     if e1.empty:
         st.info("No leads created or revived in this window.")
     else:
-        # City + Owner for the lead drill table (contact's city + assigned user).
+        # City + Owner for the lead drill table. Owner comes from the OPPORTUNITY's
+        # assigned user (the contact is often unassigned while its opp has an owner —
+        # e.g. Sunaira Hamid's opp is owned by Ali Ijaz), using the same primary-opp
+        # rule as the view (most-recently-updated non-Query-Management opp); it falls
+        # back to the contact's own assigned user.
         try:
             _ci = db_exec("SELECT contact_id, city, assigned_user_id FROM fact_contacts").fetchdf()
             _own_map = dict(db_exec("SELECT user_id, full_name FROM dim_users").fetchall())
-            _ci["Owner"] = _ci["assigned_user_id"].map(_own_map)
+            _oo = db_exec(
+                "SELECT contact_id, assigned_user_id FROM ("
+                "  SELECT o.contact_id, o.assigned_user_id, ROW_NUMBER() OVER "
+                "    (PARTITION BY o.contact_id ORDER BY o.updated_at DESC NULLS LAST) rn "
+                "  FROM fact_opportunities o "
+                "  JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id "
+                "  WHERE p.pipeline_name <> 'Query Management' AND o.contact_id IS NOT NULL"
+                ") WHERE rn = 1").fetchdf()
+            _oo_map = dict(zip(_oo["contact_id"], _oo["assigned_user_id"]))
+            _ci["_uid"] = _ci["contact_id"].map(_oo_map)
+            _ci["_uid"] = _ci["_uid"].where(_ci["_uid"].notna(), _ci["assigned_user_id"])
+            _ci["Owner"] = _ci["_uid"].map(_own_map)
             e1 = e1.merge(_ci[["contact_id", "city", "Owner"]], on="contact_id", how="left")
         except Exception:
             e1["city"] = None
