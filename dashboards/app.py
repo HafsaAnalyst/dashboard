@@ -5890,43 +5890,37 @@ if _active_tab == "Executive":
                 # on/after the lead (query) date → always a SUBSET of that channel's
                 # inquiries (so Booked can never exceed the bar total).
                 st.markdown("---")
-                st.markdown("**By platform — inquiries split by booked** "
+                st.markdown("**By platform — inquiries · booked · showed** "
                             "(conversation channel: SMS · Call · WhatsApp · TikTok · Instagram · …)")
                 _chan = e1[e1["query_channel"].notna()
                            & (e1["query_channel"].astype(str).str.strip() != "")].copy()
-                qg = (_chan.groupby("query_channel")
-                      .agg(Inquiries=("contact_id", "count"),
-                           Booked=("appt_booked", lambda s: int(s.sum())))
-                      .reset_index().rename(columns={"query_channel": "Platform"}))
-                qg["Not booked"] = (qg["Inquiries"] - qg["Booked"]).clip(lower=0)
-                qg = qg.sort_values("Inquiries", ascending=False)
-                if qg.empty:
+                if _chan.empty:
                     st.caption("No conversation-channel leads in this window.")
                 else:
-                    import altair as _altq
-                    _qc1, _qc2 = st.columns([3, 2])
-                    with _qc1:
-                        _qlong = qg.melt("Platform", value_vars=["Booked", "Not booked"],
-                                         var_name="Status", value_name="Count")
-                        _qbar = (_altq.Chart(_qlong).mark_bar().encode(
-                            x=_altq.X("Platform:N", sort=qg["Platform"].tolist(), title=None,
-                                      axis=_altq.Axis(labelAngle=0, labelFontSize=12)),
-                            y=_altq.Y("Count:Q", title=None),
-                            color=_altq.Color("Status:N", sort=["Booked", "Not booked"],
-                                              scale=_altq.Scale(domain=["Booked", "Not booked"],
-                                                                range=["#2EAD8F", "#C9CCD1"]),
-                                              legend=_altq.Legend(title=None, orient="top")),
-                            order=_altq.Order("Status:N", sort="descending"),
-                            tooltip=["Platform:N", "Status:N", "Count:Q"])
-                            .properties(height=300).configure_view(strokeWidth=0))
-                        st.altair_chart(_qbar, use_container_width=True)
-                    with _qc2:
-                        _qs = pd.concat([qg[["Platform", "Inquiries", "Booked"]], pd.DataFrame([{
-                            "Platform": "TOTAL", "Inquiries": int(qg["Inquiries"].sum()),
-                            "Booked": int(qg["Booked"].sum())}])], ignore_index=True)
-                        st.dataframe(_qs, hide_index=True, use_container_width=True, height=300)
-                        st.caption("**Inquiries** = contacts via that channel · **Booked** = booked an "
-                                   "appointment **created on/after** the query date (a subset).")
+                    # Booked = a REAL appointment on a counsellor calendar (calendar_name
+                    # present, created on/after the query date) — not just the appt flag.
+                    # Showed = that appointment was attended (appointment status = show).
+                    _hascal = (_chan["calendar_name"].notna()
+                               & (_chan["calendar_name"].astype(str).str.strip() != ""))
+                    _chan["_bk"] = ((_chan["appt_booked"] == 1) & _hascal).astype(int)
+                    _chan["_sh"] = ((_chan["appt_showed"] == 1) & _hascal).astype(int)
+                    qg = (_chan.groupby("query_channel")
+                          .agg(Inquiries=("contact_id", "count"),
+                               Booked=("_bk", "sum"), Showed=("_sh", "sum"))
+                          .reset_index().rename(columns={"query_channel": "Platform"})
+                          .sort_values("Inquiries", ascending=False))
+                    _qs = pd.concat([qg[["Platform", "Inquiries", "Booked", "Showed"]],
+                                     pd.DataFrame([{"Platform": "TOTAL",
+                                                    "Inquiries": int(qg["Inquiries"].sum()),
+                                                    "Booked": int(qg["Booked"].sum()),
+                                                    "Showed": int(qg["Showed"].sum())}])],
+                                    ignore_index=True)
+                    for _c in ("Inquiries", "Booked", "Showed"):
+                        _qs[_c] = _qs[_c].astype(int)
+                    st.dataframe(_qs, hide_index=True, use_container_width=True, height=360)
+                    st.caption("**Inquiries** = contacts via that channel · **Booked** = has an appointment "
+                               "on a counsellor calendar (created on/after the query date) · **Showed** = "
+                               "that appointment was attended (status = show).")
 
                 # ---- All conversation leads — same columns as the Bookings table ----
                 st.markdown("**All conversation leads** — same detail as Bookings "
@@ -6170,14 +6164,14 @@ if _active_tab == "Executive":
                        "legend item to isolate one. Queries excluded — they have their "
                        "own scorecard.")
 
-        # ---- 2) Counsellor booking share & show rate (pie + table) ----
-        st.markdown("### 🥧 Counsellor booking share & show rate")
+        # NOTE: the counsellor booking-share pie was removed from the Executive tab
+        # (it's operational detail that lives, in depth, on the Counsellors tab). We
+        # still compute _gc quietly so the show-rate Auto-Insight below can name the
+        # counsellor with the largest show-rate gap.
         _cn = run_df("vw_counsellors",
                      {"since": since.isoformat(), "until": until.isoformat(), "city": city})
         _gc = pd.DataFrame()
-        if _cn.empty or not {"calendar_id", "appointments", "showed"}.issubset(_cn.columns):
-            st.caption("No counsellor appointments in this window.")
-        else:
+        if not _cn.empty and {"calendar_id", "appointments", "showed"}.issubset(_cn.columns):
             _c2name = {cid: c["name"].split(" - ")[0]
                        for c in COUNSELLORS for cid in c["calendar_ids"]}
             _cn["Counsellor"] = _cn["calendar_id"].map(_c2name).fillna("Other")
@@ -6185,31 +6179,8 @@ if _active_tab == "Executive":
                    .agg(Booked=("appointments", "sum"), Showed=("showed", "sum"))
                    .reset_index())
             _gc["ShowRate"] = (_gc["Showed"] / _gc["Booked"]).replace([float("inf")], 0).fillna(0)
-            # Booking Rate = this counsellor's booked appts ÷ total leads in the
-            # window (the all-source Executive Leads cohort), i.e. the share of
-            # the period's leads that booked with that counsellor.
             _gc["BookRate"] = (_gc["Booked"] / n_leads) if n_leads else 0.0
             _gc = _gc.sort_values("Booked", ascending=False)
-            cpie, ctbl = st.columns([1, 1])
-            with cpie:
-                pie = (_alt.Chart(_gc).mark_arc(innerRadius=72, stroke="#FFFFFF",
-                                                strokeWidth=2).encode(
-                    theta=_alt.Theta("Booked:Q"),
-                    color=_alt.Color("Counsellor:N", scale=_alt.Scale(range=PAL),
-                                     title="Counsellor"),
-                    tooltip=["Counsellor:N", "Booked:Q", "Showed:Q",
-                             _alt.Tooltip("ShowRate:Q", title="Show rate", format=".0%")])
-                    .properties(height=300))
-                st.altair_chart(pie, use_container_width=True)
-            with ctbl:
-                _gd = pd.DataFrame({
-                    "Counsellor": _gc["Counsellor"].values,
-                    "Booked": _gc["Booked"].astype(int).values,
-                    "Showed": _gc["Showed"].astype(int).values,
-                    "Booking Rate": (_gc["BookRate"] * 100).map(lambda v: f"{v:.0f}%").values,
-                    "Show Rate": (_gc["ShowRate"] * 100).map(lambda v: f"{v:.0f}%").values,
-                })
-                st.dataframe(_gd, hide_index=True, use_container_width=True, height=300)
 
         # ---- 3) Auto-Insights (rule-based) ----
         st.markdown("### 💡 Auto-Insights")
@@ -6279,6 +6250,10 @@ if _active_tab == "Executive":
                                          f"{n_total:,}) — a large untracked top-of-funnel (DMs with no form / "
                                          "no contact info). Tighten lead capture to convert these."))
 
+        # Keep the exec view lean: show only the 3 most material insights, warnings
+        # first (they need action), then wins, then informational.
+        _iprio = {"warn": 0, "good": 1, "info": 2}
+        insights = sorted(insights, key=lambda x: _iprio.get(x[0], 3))[:3]
         if not insights:
             st.caption("No notable changes vs last period.")
         for lvl, txt in insights:
