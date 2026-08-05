@@ -917,7 +917,7 @@ except Exception as _dberr:
 # Lazy tabs: a segmented control drives which ONE tab renders, so only the
 # selected tab runs its (expensive) MotherDuck queries — not all 8 every rerun.
 _TAB_NAMES = ["Executive", "Meta Ads", "Funnels", "Counsellors", "SEO & Traffic",
-              "Forecast & Goals", "Upload Reports", "Follower Performance", "WBR", "Breakdown"]
+              "Forecast & Goals", "Upload Reports", "Sales Team Perf.", "WBR", "Breakdown"]
 _active_tab = st.segmented_control(
     "Tabs", _TAB_NAMES, default="Executive", key="active_tab",
     label_visibility="collapsed") or "Executive"
@@ -6818,9 +6818,9 @@ if _active_tab == "Funnels":
 # =====================================================================
 # FOLLOWER PERFORMANCE TAB — presales agents (GHL opportunity "followers")
 # =====================================================================
-if _active_tab == "Follower Performance":
+if _active_tab == "Sales Team Perf.":
     st.markdown(
-        "<div class='panel-title'>Follower Performance"
+        "<div class='panel-title'>Sales Team Perf."
         "<span class='hint'>L2C-Education / L2C-VISA · created & stage-change activity in range</span></div>",
         unsafe_allow_html=True)
 
@@ -6837,7 +6837,7 @@ if _active_tab == "Follower Performance":
 
     # ---- Opportunities CREATED in range (Total Opportunities + owner-table base) ----
     _opps = db_exec(
-        f"SELECT o.opportunity_id, o.contact_id, o.assigned_user_id, "
+        f"SELECT o.opportunity_id, o.contact_id, o.assigned_user_id, o.status AS opp_status, "
         f"       s.stage_name AS cur_stage, p.pipeline_name "
         f"FROM fact_opportunities o "
         f"JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id "
@@ -6973,12 +6973,68 @@ if _active_tab == "Follower Performance":
         for _b in FP_BUCKETS:
             _trow[_b] = int(_disp[_b].sum())
         _disp = pd.concat([_disp, pd.DataFrame([_trow])], ignore_index=True)
-        st.dataframe(_disp, hide_index=True, use_container_width=True,
-                     height=min(320, 70 + 36 * len(_disp)))
+        _sel_o = st.dataframe(_disp, hide_index=True, use_container_width=True,
+                              on_select="rerun", selection_mode="single-row", key="fp_owner_sel",
+                              height=min(320, 70 + 36 * len(_disp)))
         st.caption("Owner = the opportunity's assigned user. Counts = opportunities **created in the "
                    "range** (L2C-Education / L2C-VISA) owned by each person, bucketed by their "
                    "**current** stage. **Later Stage** = any stage beyond these (Cold Leads, Post "
-                   "Consultation, COE, 50% Fee, etc.).")
+                   "Consultation, COE, 50% Fee, etc.). **Click a row to list that owner's contacts below.**")
+
+        # ---- Drill: click an owner → their contacts; no selection → all owners ----
+        _pick_owner = None
+        try:
+            _ro = (_sel_o.selection.get("rows") if _sel_o else None) or []
+            if _ro:
+                _cand = _disp.iloc[int(_ro[0])]["Owner"]
+                if _cand != "Total":
+                    _pick_owner = _cand
+        except Exception:
+            _pick_owner = None
+
+        # contact-level lookups: source / lead-arrival date / calendar (view), email /
+        # phone (fact_contacts), and the follow-up number parsed from the l2c-follow-up-N tag.
+        _e1v = run_df("vw_exec1_lead_detail", {"since": _s, "until": _u, "city": "All"})
+        _src_m = dict(zip(_e1v["contact_id"], _e1v["refined_source"])) if not _e1v.empty else {}
+        _ld_m  = dict(zip(_e1v["contact_id"], _e1v["lead_date"]))      if not _e1v.empty else {}
+        _cal_m = dict(zip(_e1v["contact_id"], _e1v["calendar_name"]))  if not _e1v.empty else {}
+        _ci = db_exec("SELECT contact_id, email, phone FROM fact_contacts").fetchdf()
+        _em_m = dict(zip(_ci["contact_id"], _ci["email"]))
+        _ph_m = dict(zip(_ci["contact_id"], _ci["phone"]))
+        _fu_m = {}
+        try:                                        # follow-up N from the l2c-follow-up-N tag
+            _ft = db_exec(
+                "SELECT contact_id, MAX(TRY_CAST(regexp_extract(LOWER(tag), 'follow-up-([0-9]+)', 1) "
+                "AS INTEGER)) AS fu FROM fact_contact_tags "
+                "WHERE LOWER(tag) LIKE '%follow-up-%' GROUP BY contact_id").fetchdf()
+            _fu_m = dict(zip(_ft["contact_id"], _ft["fu"]))
+        except Exception:
+            _fu_m = {}
+
+        _det = _ot if _pick_owner is None else _ot[_ot["Owner"] == _pick_owner]
+        _who = "all owners" if _pick_owner is None else _pick_owner
+        st.markdown(f"##### 📋 Contacts — {_who} ({len(_det):,})")
+        if _det.empty:
+            st.caption("No opportunities to show.")
+        else:
+            _detail = pd.DataFrame({
+                "Email": _det["contact_id"].map(_em_m).fillna("(no email)").replace("", "(no email)").values,
+                "Stage": _det["cur_stage"].fillna("—").values,
+                "Pipeline": _det["pipeline_name"].fillna("—").values,
+                "Lead Arvl Date": _det["contact_id"].map(_ld_m).map(
+                    lambda v: pd.to_datetime(v).strftime("%Y-%m-%d") if pd.notna(v) else "—").values,
+                "Owner": _det["Owner"].values,
+                "Calendar Name": _det["contact_id"].map(_cal_m).fillna("—").replace("", "—").values,
+                "Source": _det["contact_id"].map(_src_m).fillna("—").replace("", "—").values,
+                "Number": _det["contact_id"].map(_ph_m).map(
+                    lambda v: str(v) if (pd.notna(v) and str(v).strip() not in ("", "None")) else "—").values,
+                "Status": _det["opp_status"].fillna("—").replace("", "—").values,
+                "Follow up": _det["contact_id"].map(_fu_m).map(
+                    lambda v: str(int(v)) if pd.notna(v) else "—").values,
+            })
+            st.dataframe(_detail, hide_index=True, use_container_width=True, height=460)
+            st.caption("**Lead Arvl Date** = lead created/revived date · **Follow up** = the number in the "
+                       "contact's `l2c-follow-up-N` tag (blank until the ETL ingests tags).")
 
 # =====================================================================
 # WBR — Weekly Business Review (independent of the global date filter)
