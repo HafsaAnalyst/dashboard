@@ -45,9 +45,10 @@ SCHEMA_PATH = ROOT / "models" / "schema.sql"
 FULL_REFRESH_START = "2024-01-01"
 INCREMENTAL_DAYS = 2  # overlap window for late-arriving data
 # ONE-TIME backfill floor: while set, every incremental (scheduled) run also re-fetches
-# from this date, so existing older contacts get their UTM attribution (GBP/GMB/organic)
-# repopulated from the custom fields. SET BACK TO None once one run has completed green.
-BACKFILL_SINCE = "2026-07-01"
+# from this date. Kept OFF for normal operation — a wide floor makes each hourly run
+# re-pull weeks of GHL data, which can exceed the Action timeout / hit rate limits and
+# stall the refresh. For a one-off backfill use the Actions "Run workflow → since" input.
+BACKFILL_SINCE = None
 META_DAILY_LOOKBACK = 30  # re-fetch this many days of Meta daily spend each run
                           # (spend retro-updates; fills skipped days)
 GSC_LOOKBACK = 14         # re-fetch this many days of GSC each run (data lands
