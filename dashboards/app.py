@@ -6879,14 +6879,51 @@ if _active_tab == "Sales Team Perf.":
     except Exception:
         follow_up = None
 
-    # ---- owner mapping for the created-in-range opps ----
+    # ---- owner mapping + person-credit for the created-in-range opps ----
     _owners = dict(db_exec("SELECT user_id, full_name FROM dim_users").fetchall())
-    if not _opps.empty:
+
+    # Stage buckets. For the LATER stages the opp has moved to a counsellor (who becomes
+    # the owner) and the sales rep is only a FOLLOWER — so those buckets are credited by
+    # follower, not owner. Early stages stay owner-credited.
+    FP_BUCKETS = ["New Lead", "In Communication", "Cold Lead", "Booking Link Shared",
+                  "Appointment Booked", "Post Consultation", "No Show", "Later Stage"]
+    FOLLOWER_BUCKETS = {"Appointment Booked", "Post Consultation"}
+
+    def _fp_bucket(s):
+        s = str(s or "")
+        if s in ("Appointment Booked", "MARA Appointment Booked"):
+            return "Appointment Booked"
+        if s == "Cold Leads":
+            return "Cold Lead"
+        return s if s in FP_BUCKETS else "Later Stage"
+
+    _cred_cols = ["opportunity_id", "contact_id", "bucket", "cur_stage",
+                  "pipeline_name", "opp_status", "Owner", "Person"]
+    if _opps.empty:
+        _credited = pd.DataFrame(columns=_cred_cols)
+    else:
         _opps = _opps.copy()
         _opps["Owner"] = _opps["assigned_user_id"].map(_owners).fillna("—")
-        _ot = _opps[_opps["Owner"].isin(FP_OWNERS)].copy()
-    else:
-        _ot = _opps
+        _opps["bucket"] = _opps["cur_stage"].map(_fp_bucket)
+        # followers (among the 3 sales reps) per opp
+        try:
+            _fdf = db_exec("SELECT opportunity_id, follower_user_id "
+                           "FROM fact_opportunity_followers").fetchdf()
+            _fdf["Person"] = _fdf["follower_user_id"].map(_owners)
+            _fdf = _fdf[_fdf["Person"].isin(FP_OWNERS)][["opportunity_id", "Person"]]
+        except Exception:
+            _fdf = pd.DataFrame(columns=["opportunity_id", "Person"])
+        _base_cols = ["opportunity_id", "contact_id", "bucket", "cur_stage",
+                      "pipeline_name", "opp_status", "Owner"]
+        # early stages → credit the OWNER (the rep owns the lead)
+        _early = _opps[~_opps["bucket"].isin(FOLLOWER_BUCKETS)
+                       & _opps["Owner"].isin(FP_OWNERS)][_base_cols].copy()
+        _early["Person"] = _early["Owner"]
+        # later stages → credit the FOLLOWER rep (Owner shown is the counsellor)
+        _late = (_opps[_opps["bucket"].isin(FOLLOWER_BUCKETS)][_base_cols]
+                 .merge(_fdf, on="opportunity_id", how="inner"))
+        _credited = (pd.concat([_early, _late], ignore_index=True)
+                     .drop_duplicates(subset=["opportunity_id", "Person"]))
 
     # ---- Scorecards ----
     _fu_txt = f"{follow_up:,}" if follow_up is not None else "—"
@@ -6929,42 +6966,32 @@ if _active_tab == "Sales Team Perf.":
         st.altair_chart((_bar + _lab).properties(height=180).configure_view(strokeWidth=0),
                         use_container_width=True)
     with _gp:
-        st.markdown("**Opportunities by owner**")
-        if _ot.empty:
-            st.caption("No opportunities for these owners in range.")
+        st.markdown("**Opportunities by person**")
+        if _credited.empty:
+            st.caption("No opportunities for these reps in range.")
         else:
-            _w = (_ot.groupby("Owner")["opportunity_id"].nunique()
+            _w = (_credited.groupby("Person")["opportunity_id"].nunique()
                   .reindex(FP_OWNERS, fill_value=0).reset_index(name="opps"))
             _w = _w[_w["opps"] > 0]
             if _w.empty:
-                st.caption("No opportunities for these owners in range.")
+                st.caption("No opportunities for these reps in range.")
             else:
                 _pie = _alt.Chart(_w).mark_arc(innerRadius=45).encode(
                     theta=_alt.Theta("opps:Q"),
-                    color=_alt.Color("Owner:N", title="Owner"),
-                    tooltip=["Owner:N", "opps:Q"])
+                    color=_alt.Color("Person:N", title="Person"),
+                    tooltip=["Person:N", "opps:Q"])
                 st.altair_chart(_pie.properties(height=180), use_container_width=True)
 
-    # ---- Owner table: created-in-range opps by current stage ----
+    # ---- By-owner table: owner-credited early stages + follower-credited later ----
     st.markdown("---")
     st.markdown("#### 🧑‍💼 By owner — opportunities created in range, by current stage")
-    FP_BUCKETS = ["New Lead", "In Communication", "Booking Link Shared",
-                  "Appointment Booked", "No Show", "Later Stage"]
-
-    def _fp_bucket(s):
-        s = str(s or "")
-        if s in ("Appointment Booked", "MARA Appointment Booked"):
-            return "Appointment Booked"
-        return s if s in FP_BUCKETS else "Later Stage"
-
-    if _ot.empty:
-        st.info("No opportunities created in this range for these owners.")
+    if _credited.empty:
+        st.info("No opportunities created in this range for these reps.")
     else:
-        _ot["bucket"] = _ot["cur_stage"].map(_fp_bucket)
-        _pv = (_ot.pivot_table(index="Owner", columns="bucket", values="opportunity_id",
-                               aggfunc="nunique", fill_value=0)
+        _pv = (_credited.pivot_table(index="Person", columns="bucket", values="opportunity_id",
+                                     aggfunc="nunique", fill_value=0)
                .reindex(index=FP_OWNERS, columns=FP_BUCKETS, fill_value=0))
-        _tot = _ot.groupby("Owner")["opportunity_id"].nunique().reindex(FP_OWNERS, fill_value=0)
+        _tot = _credited.groupby("Person")["opportunity_id"].nunique().reindex(FP_OWNERS, fill_value=0)
         _disp = pd.DataFrame({"Owner": FP_OWNERS})
         _disp["Total Opportunities"] = _disp["Owner"].map(_tot).fillna(0).astype(int).values
         for _b in FP_BUCKETS:
@@ -6976,12 +7003,14 @@ if _active_tab == "Sales Team Perf.":
         _sel_o = st.dataframe(_disp, hide_index=True, use_container_width=True,
                               on_select="rerun", selection_mode="single-row", key="fp_owner_sel",
                               height=min(320, 70 + 36 * len(_disp)))
-        st.caption("Owner = the opportunity's assigned user. Counts = opportunities **created in the "
-                   "range** (L2C-Education / L2C-VISA) owned by each person, bucketed by their "
-                   "**current** stage. **Later Stage** = any stage beyond these (Cold Leads, Post "
-                   "Consultation, COE, 50% Fee, etc.). **Click a row to list that owner's contacts below.**")
+        st.caption("Opportunities **created in the range** (L2C-Education / L2C-VISA), bucketed by "
+                   "**current** stage. Early stages (New Lead → Booking Link Shared, Cold Lead) are "
+                   "credited to the opp's **owner**; **Appointment Booked** and **Post Consultation** are "
+                   "credited to the sales rep as a **follower** (at those stages the owner is the "
+                   "counsellor). **Later Stage** = any stage beyond these. **Click a row to list that "
+                   "person's contacts below.**")
 
-        # ---- Drill: click an owner → their contacts; no selection → all owners ----
+        # ---- Drill: click a person → their contacts; no selection → all ----
         _pick_owner = None
         try:
             _ro = (_sel_o.selection.get("rows") if _sel_o else None) or []
@@ -7011,8 +7040,8 @@ if _active_tab == "Sales Team Perf.":
         except Exception:
             _fu_m = {}
 
-        _det = _ot if _pick_owner is None else _ot[_ot["Owner"] == _pick_owner]
-        _who = "all owners" if _pick_owner is None else _pick_owner
+        _det = _credited if _pick_owner is None else _credited[_credited["Person"] == _pick_owner]
+        _who = "all" if _pick_owner is None else _pick_owner
         st.markdown(f"##### 📋 Contacts — {_who} ({len(_det):,})")
         if _det.empty:
             st.caption("No opportunities to show.")
@@ -7033,7 +7062,9 @@ if _active_tab == "Sales Team Perf.":
                     lambda v: str(int(v)) if pd.notna(v) else "—").values,
             })
             st.dataframe(_detail, hide_index=True, use_container_width=True, height=460)
-            st.caption("**Lead Arvl Date** = lead created/revived date · **Follow up** = the number in the "
+            st.caption("**Owner** is the opportunity's assigned user — a counsellor for the "
+                       "Appointment-Booked / Post-Consultation rows (the rep is the follower there). "
+                       "**Lead Arvl Date** = lead created/revived date · **Follow up** = the number in the "
                        "contact's `l2c-follow-up-N` tag (blank until the ETL ingests tags).")
 
 # =====================================================================
