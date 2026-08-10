@@ -2237,6 +2237,9 @@ last_appt AS (   -- the conversion contact's most recent appointment calendar
           AND LOWER(COALESCE(appointment_status,'')) <> 'invalid'
     ) WHERE rn = 1
 )
+SELECT contact_id, email, source, pipeline, stage, status, changed_date,
+       conv_type, calendar_name, detail
+FROM (
 SELECT cv.contact_id, c.email,
     CASE
         WHEN COALESCE(ls.campaign,'') <> '' OR ls.event_source = 'Paid Social'      THEN 'Paid Social'
@@ -2272,18 +2275,22 @@ SELECT cv.contact_id, c.email,
             '%7C', '|'), '%2F', '/'), '%2B', '+'), '%20', ' '), '+', ' '), ''),
         NULLIF(ls.form_name, ''),
         CASE WHEN cc.channel IN ('Instagram','WhatsApp','TikTok','Facebook') THEN cc.channel END
-    )                                                                      AS detail
+    )                                                                      AS detail,
+    ls.submitted_at                                                        AS _latest_form_at
 FROM conv cv
 JOIN fact_contacts c ON c.contact_id = cv.contact_id
 LEFT JOIN ls   ON ls.contact_id = cv.contact_id
 LEFT JOIN chan cc ON cc.contact_id = cv.contact_id
 LEFT JOIN last_appt la ON la.contact_id = cv.contact_id
 LEFT JOIN dim_calendars dc ON dc.calendar_id = la.calendar_id
--- Keep the conversion only if the contact's LATEST form/survey (ls) is inside the
--- selected range AND is not a Query Management form. ls is a LEFT JOIN, so contacts
--- with no form/survey at all are dropped (ls.submitted_at is NULL → fails the range).
-WHERE CAST(ls.submitted_at + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
-  AND LOWER(COALESCE(ls.form_name, '')) NOT LIKE 'query management%';
+) z
+-- Keep the conversion only if the contact's LATEST form/survey is inside the selected
+-- range AND its Detail is not a 'Query Management' entry. Filtering on `detail` (not the
+-- raw form_name) matches exactly what the drill shows: a row keeps its real campaign in
+-- Detail even if a Query Management form exists. _latest_form_at is NULL for contacts
+-- with no form/survey at all, so they fail the range check and are dropped.
+WHERE CAST(_latest_form_at + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
+  AND LOWER(COALESCE(detail, '')) NOT LIKE 'query management%';
 
 
 -- =====================================================================
