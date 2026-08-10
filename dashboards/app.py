@@ -1723,6 +1723,9 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
                         "Email": tbl_rows["email"].values,
                         "Status": tbl_rows["appointment_status"].values,
                         "Counsellor": tbl_rows["counsellor"].values,
+                        "Online/Onsite": tbl_rows["calendar_id"].map(
+                            lambda c: "Online" if "online" in str(_cal_name_map.get(c, "") or "").lower()
+                            else "Onsite").values,
                         "Source": _s.values,
                         "Platform": _p.values,
                         "Lead Created Date": _ld.values,
@@ -1876,6 +1879,9 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
                     "Status": tbl_rows["appointment_status"].values,
                     "Counsellor": tbl_rows["counsellor"].values,
                     "City": tbl_rows["counsellor_city"].values,
+                    "Online/Onsite": tbl_rows["calendar_id"].map(
+                        lambda c: "Online" if "online" in str(_cal_name_map.get(c, "") or "").lower()
+                        else "Onsite").values,
                     "Source": _s.values,
                     "Platform": _p.values,
                     "Lead Created Date": _ld.values,
@@ -5565,6 +5571,9 @@ if _active_tab == "Executive":
                             else ("Booked" if r["appt_booked"] == 1 else "—"), axis=1)
             cal = dd.apply(lambda r: r["calendar_name"]
                            if (r["appt_booked"] == 1 and pd.notna(r["calendar_name"])) else "—", axis=1)
+            # Online vs Onsite from the booked calendar name ("—" when not booked).
+            mode = cal.map(lambda n: "—" if str(n).strip() in ("", "—")
+                           else ("Online" if "online" in str(n).lower() else "Onsite"))
 
             # Platform: social platform for Social/Paid leads; for Queries the
             # conversation channel (SMS / Call / WhatsApp / TikTok / Instagram / ...).
@@ -5591,6 +5600,7 @@ if _active_tab == "Executive":
                     lambda v: pd.to_datetime(v).strftime("%Y-%m-%d") if pd.notna(v) else "—").values,
                 "Appointment Status": appt.values,
                 "Calendar Name": cal.values,
+                "Online/Onsite": mode.values,
                 "Pipeline": dd["pipeline"].fillna("—").values,
                 "Stage": dd["stage"].fillna("—").values,
                 "Status": dd["status"].fillna("—").replace("", "—").values,
