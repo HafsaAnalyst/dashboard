@@ -6847,37 +6847,105 @@ if _active_tab == "Sales Team Perf.":
         _fp_pipes + [_s, _u]).fetchdf()
     total_opps = int(_opps["opportunity_id"].nunique()) if not _opps.empty else 0
 
-    # ---- Stage-change-in-range counts (ANY opp in the selected pipeline[s]) ----
-    def _fp_stage_change(stages):
+    # ---- Drill enrichment: per-contact email / phone / primary-opp stage-pipeline-
+    #      status-owner / followers / source / calendar. Reused by every scorecard drill.
+    _owners = dict(db_exec("SELECT user_id, full_name FROM dim_users").fetchall())
+    _ci = db_exec("SELECT contact_id, email, phone FROM fact_contacts").fetchdf()
+    _em_m = dict(zip(_ci["contact_id"], _ci["email"]))
+    _ph_m = dict(zip(_ci["contact_id"], _ci["phone"]))
+    _popp = db_exec(
+        "SELECT contact_id, opportunity_id, pipeline_name, stage_name, status, assigned_user_id FROM ("
+        "  SELECT o.contact_id, o.opportunity_id, p.pipeline_name, s.stage_name, o.status, "
+        "         o.assigned_user_id, ROW_NUMBER() OVER (PARTITION BY o.contact_id "
+        "           ORDER BY o.updated_at DESC NULLS LAST) rn "
+        "  FROM fact_opportunities o JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id "
+        "  JOIN dim_stages s ON s.stage_id = o.stage_id "
+        "  WHERE p.pipeline_name <> 'Query Management') WHERE rn = 1").fetchdf()
+    _pstage  = dict(zip(_popp["contact_id"], _popp["stage_name"]))
+    _ppipe   = dict(zip(_popp["contact_id"], _popp["pipeline_name"]))
+    _pstat   = dict(zip(_popp["contact_id"], _popp["status"]))
+    _powner  = dict(zip(_popp["contact_id"], _popp["assigned_user_id"].map(_owners)))
+    _popp_id = dict(zip(_popp["contact_id"], _popp["opportunity_id"]))
+    try:
+        _fall = db_exec("SELECT opportunity_id, follower_user_id FROM fact_opportunity_followers").fetchdf()
+        _fall["nm"] = _fall["follower_user_id"].map(_owners)
+        _foll_opp = (_fall.dropna(subset=["nm"]).groupby("opportunity_id")["nm"]
+                     .apply(lambda x: ", ".join(sorted(set(x)))).to_dict())
+    except Exception:
+        _foll_opp = {}
+    _pfoll = {c: _foll_opp.get(o, "") for c, o in _popp_id.items()}
+    _srcv = run_df("vw_exec1_lead_detail", {"since": _s, "until": _u, "city": "All"})
+    _src_m = dict(zip(_srcv["contact_id"], _srcv["refined_source"])) if not _srcv.empty else {}
+    try:
+        _cd = db_exec(
+            "SELECT contact_id, calendar_name FROM ("
+            "  SELECT a.contact_id, dc.calendar_name, ROW_NUMBER() OVER (PARTITION BY a.contact_id "
+            "    ORDER BY a.date_added DESC) rn FROM fact_appointments a "
+            "  JOIN dim_calendars dc ON dc.calendar_id = a.calendar_id "
+            "  WHERE LOWER(COALESCE(a.appointment_status,'')) <> 'invalid' "
+            "    AND a.contact_id IS NOT NULL) WHERE rn = 1").fetchdf()
+        _cal_default = dict(zip(_cd["contact_id"], _cd["calendar_name"]))
+    except Exception:
+        _cal_default = {}
+
+    def _stp_str(m, c, d="—"):
+        v = m.get(c)
+        return str(v) if (v is not None and str(v).strip() not in ("", "None", "nan")) else d
+
+    def _stp_detail(cids, cal_map=None):
+        cids = list(dict.fromkeys([c for c in cids if c]))
+        calm = cal_map if cal_map is not None else _cal_default
+        return pd.DataFrame({
+            "Email": [_stp_str(_em_m, c, "(no email)") for c in cids],
+            "Stage": [_stp_str(_pstage, c) for c in cids],
+            "Pipeline": [_stp_str(_ppipe, c) for c in cids],
+            "Status": [_stp_str(_pstat, c) for c in cids],
+            "Phone": [_stp_str(_ph_m, c) for c in cids],
+            "Owner": [_stp_str(_powner, c) for c in cids],
+            "Follower": [_stp_str(_pfoll, c) for c in cids],
+            "Calendar Name": [_stp_str(calm, c) for c in cids],
+            "Source": [_stp_str(_src_m, c) for c in cids],
+        })
+
+    # ---- Scorecard record-sets ----
+    def _stage_change_contacts(stages):
         _sp = ",".join(["?"] * len(stages))
         try:
-            _r = db_exec(
-                f"SELECT COUNT(DISTINCT opportunity_id) FROM fact_opp_stage_events "
+            return db_exec(
+                f"SELECT DISTINCT contact_id FROM fact_opp_stage_events "
                 f"WHERE pipeline IN ({_pp}) AND new_stage IN ({_sp}) "
-                f"  AND CAST(changed_at + INTERVAL 10 HOUR AS DATE) BETWEEN ? AND ?",
-                _fp_pipes + stages + [_s, _u]).fetchone()
-            return int(_r[0]) if _r and _r[0] else 0
+                f"  AND CAST(changed_at + INTERVAL 10 HOUR AS DATE) BETWEEN ? AND ? "
+                f"  AND contact_id IS NOT NULL",
+                _fp_pipes + stages + [_s, _u]).fetchdf()["contact_id"].tolist()
         except Exception:
-            return 0
-    appt_booked = _fp_stage_change(["Appointment Booked", "MARA Appointment Booked"])
-    bls_cnt     = _fp_stage_change(["Booking Link Shared"])
-    no_show     = _fp_stage_change(["No Show"])
+            return []
+    _nl_cids  = _stage_change_contacts(["New Lead"])
+    _bls_cids = _stage_change_contacts(["Booking Link Shared"])
+    n_new_leads = len(set(_nl_cids))
+    n_bls = len(set(_bls_cids))
 
-    # ---- Follow Up: created-in-range opps whose contact has an l2c-follow-up-* tag ----
-    follow_up = None   # None => fact_contact_tags not populated yet (ETL not run)
+    # appointments CREATED in the range = slots filled (excludes cancelled & invalid),
+    # for contacts with an opp in the selected pipeline[s] — irrespective of lead date.
     try:
-        _r = db_exec(
-            f"SELECT COUNT(DISTINCT o.opportunity_id) "
-            f"FROM fact_opportunities o "
-            f"JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id "
-            f"JOIN fact_contact_tags t ON t.contact_id = o.contact_id "
-            f"     AND LOWER(t.tag) LIKE 'l2c-follow-up-%' "
-            f"WHERE p.pipeline_name IN ({_pp}) "
-            f"  AND CAST(o.created_at + INTERVAL 10 HOUR AS DATE) BETWEEN ? AND ?",
-            _fp_pipes + [_s, _u]).fetchone()
-        follow_up = int(_r[0]) if _r and _r[0] else 0
+        _ab = db_exec(
+            f"SELECT a.contact_id, a.appointment_id, LOWER(COALESCE(a.canonical_outcome,'')) AS outcome, "
+            f"       dc.calendar_name, a.date_added "
+            f"FROM fact_appointments a LEFT JOIN dim_calendars dc ON dc.calendar_id = a.calendar_id "
+            f"WHERE CAST(a.date_added + INTERVAL 10 HOUR AS DATE) BETWEEN ? AND ? "
+            f"  AND LOWER(COALESCE(a.appointment_status,'')) NOT IN ('cancelled', 'invalid') "
+            f"  AND a.contact_id IN (SELECT DISTINCT o.contact_id FROM fact_opportunities o "
+            f"      JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id "
+            f"      WHERE p.pipeline_name IN ({_pp}))",
+            [_s, _u] + _fp_pipes).fetchdf()
     except Exception:
-        follow_up = None
+        _ab = pd.DataFrame(columns=["contact_id", "appointment_id", "outcome", "calendar_name", "date_added"])
+    n_appt = len(_ab)
+    _ab_cids = _ab["contact_id"].tolist()
+    _ab_sorted = _ab.sort_values("date_added") if not _ab.empty else _ab
+    _ab_cal = dict(zip(_ab_sorted["contact_id"], _ab_sorted["calendar_name"])) if not _ab.empty else {}
+    _sh = _ab[_ab["outcome"] == "show"] if not _ab.empty else _ab
+    n_showed = len(_sh)
+    _sh_cids = _sh["contact_id"].tolist() if not _sh.empty else []
 
     # ---- owner mapping + person-credit for the created-in-range opps ----
     _owners = dict(db_exec("SELECT user_id, full_name FROM dim_users").fetchall())
@@ -6925,32 +6993,39 @@ if _active_tab == "Sales Team Perf.":
         _credited = (pd.concat([_early, _late], ignore_index=True)
                      .drop_duplicates(subset=["opportunity_id", "Person"]))
 
-    # ---- Scorecards ----
-    _fu_txt = f"{follow_up:,}" if follow_up is not None else "—"
-    _cards = [("TOTAL OPPORTUNITIES", f"{total_opps:,}"),
-              ("FOLLOW UP", _fu_txt),
-              ("BOOKING LINK SHARED", f"{bls_cnt:,}"),
-              ("APPOINTMENT BOOKED", f"{appt_booked:,}"),
-              ("NO SHOW", f"{no_show:,}")]
-    for _col, (_lbl, _val) in zip(st.columns(5), _cards):
-        _col.metric(_lbl, _val)
-    if follow_up is None:
-        st.caption("⚠️ **Follow Up** will populate once the ETL has ingested contact tags "
-                   "(new `fact_contact_tags` table) — commit the ETL change and let it run.")
-    st.caption("**Total Opportunities / Follow Up** = opportunities **created** in the range "
-               "(L2C-Education / L2C-VISA). **Booking Link Shared / Appointment Booked / No Show** = "
-               "opportunities whose stage **changed to** that stage within the range (any opp; "
-               "Appointment Booked includes MARA Appointment Booked). **Follow Up** = a created-in-range "
-               "opp whose contact carries an `l2c-follow-up-N` tag.")
+    # ---- Scorecards (click a card → drill into its contacts) ----
+    @st.dialog(" ", width="large")
+    def _stp_drill(title, df):
+        st.markdown(f"### {title} · {len(df):,} contacts")
+        if df.empty:
+            st.caption("No contacts.")
+        else:
+            st.dataframe(df, hide_index=True, use_container_width=True, height=460)
+
+    _cardspecs = [
+        ("New Leads", n_new_leads, _nl_cids, None),
+        ("Booking Link Shared", n_bls, _bls_cids, None),
+        ("Appointment Booked", n_appt, _ab_cids, _ab_cal),
+        ("Showed", n_showed, _sh_cids, _ab_cal),
+    ]
+    for _col, (_lbl, _val, _cids, _calm) in zip(st.columns(4), _cardspecs):
+        if _col.button(f"{_lbl.upper()}\n\n{_val:,}", key=f"stp_card_{_lbl}",
+                       use_container_width=True):
+            _stp_drill(_lbl, _stp_detail(_cids, _calm))
+    st.caption("**New Leads / Booking Link Shared** = opportunities whose stage **changed to** that "
+               "stage within the range (L2C-Education / L2C-VISA). **Appointment Booked** = appointments "
+               "**created** in the range (slots filled — excludes cancelled & invalid), irrespective of "
+               "when the lead/opp was created. **Showed** = of those appointments, the one attended "
+               "(status = show). **Click any card** for the email list (stage · pipeline · status · phone "
+               "· owner · follower · calendar · source).")
 
     # ---- Charts: bar (scorecard totals) + pie (opps by owner) ----
     _gb, _gp = st.columns([3, 2])
     with _gb:
         st.markdown("**Scorecard totals**")
-        _order = ["Total Opportunities", "Follow Up", "Booking Link Shared",
-                  "Appointment Booked", "No Show"]
+        _order = ["New Leads", "Booking Link Shared", "Appointment Booked", "Showed"]
         _m = pd.DataFrame({"Metric": _order,
-                           "Count": [total_opps, int(follow_up or 0), bls_cnt, appt_booked, no_show]})
+                           "Count": [n_new_leads, n_bls, n_appt, n_showed]})
         _bar = _alt.Chart(_m).mark_bar(cornerRadius=6).encode(
             x=_alt.X("Count:Q", title=None, axis=_alt.Axis(grid=False, labels=False, ticks=False)),
             y=_alt.Y("Metric:N", sort=_order, title=None,
