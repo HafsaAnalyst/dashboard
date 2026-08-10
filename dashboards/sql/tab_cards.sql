@@ -2278,7 +2278,12 @@ JOIN fact_contacts c ON c.contact_id = cv.contact_id
 LEFT JOIN ls   ON ls.contact_id = cv.contact_id
 LEFT JOIN chan cc ON cc.contact_id = cv.contact_id
 LEFT JOIN last_appt la ON la.contact_id = cv.contact_id
-LEFT JOIN dim_calendars dc ON dc.calendar_id = la.calendar_id;
+LEFT JOIN dim_calendars dc ON dc.calendar_id = la.calendar_id
+-- Keep the conversion only if the contact's LATEST form/survey (ls) is inside the
+-- selected range AND is not a Query Management form. ls is a LEFT JOIN, so contacts
+-- with no form/survey at all are dropped (ls.submitted_at is NULL → fails the range).
+WHERE CAST(ls.submitted_at + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
+  AND LOWER(COALESCE(ls.form_name, '')) NOT LIKE 'query management%';
 
 
 -- =====================================================================
