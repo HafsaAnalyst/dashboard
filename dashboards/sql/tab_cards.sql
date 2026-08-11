@@ -2237,9 +2237,6 @@ last_appt AS (   -- the conversion contact's most recent appointment calendar
           AND LOWER(COALESCE(appointment_status,'')) <> 'invalid'
     ) WHERE rn = 1
 )
-SELECT contact_id, email, source, pipeline, stage, status, changed_date,
-       conv_type, calendar_name, detail
-FROM (
 SELECT cv.contact_id, c.email,
     CASE
         WHEN COALESCE(ls.campaign,'') <> '' OR ls.event_source = 'Paid Social'      THEN 'Paid Social'
@@ -2281,13 +2278,7 @@ JOIN fact_contacts c ON c.contact_id = cv.contact_id
 LEFT JOIN ls   ON ls.contact_id = cv.contact_id
 LEFT JOIN chan cc ON cc.contact_id = cv.contact_id
 LEFT JOIN last_appt la ON la.contact_id = cv.contact_id
-LEFT JOIN dim_calendars dc ON dc.calendar_id = la.calendar_id
-) z
--- Conversions cohort stays the ORIGINAL set — every contact that reached a converting
--- stage inside the window (the range scoping lives in the `conv` CTE above). We only
--- drop rows whose Detail is a 'Query Management' entry, keyed on the computed `detail`
--- so it matches exactly what the drill shows. No latest-form / in-range form filter.
-WHERE LOWER(COALESCE(detail, '')) NOT LIKE 'query management%';
+LEFT JOIN dim_calendars dc ON dc.calendar_id = la.calendar_id;
 
 
 -- =====================================================================

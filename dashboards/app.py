@@ -917,7 +917,8 @@ except Exception as _dberr:
 # Lazy tabs: a segmented control drives which ONE tab renders, so only the
 # selected tab runs its (expensive) MotherDuck queries — not all 8 every rerun.
 _TAB_NAMES = ["Executive", "Meta Ads", "Funnels", "Counsellors", "SEO & Traffic",
-              "Forecast & Goals", "Upload Reports", "Sales Team Perf.", "WBR", "Breakdown"]
+              "Forecast & Goals", "Upload Reports", "Sales Team Perf.", "WBR",
+              "Weekly Report", "Breakdown"]
 _active_tab = st.segmented_control(
     "Tabs", _TAB_NAMES, default="Executive", key="active_tab",
     label_visibility="collapsed") or "Executive"
@@ -7399,6 +7400,363 @@ if _active_tab == "WBR":
         st.caption("**COE conversions** (same as the Executive **Conversions → COE** drill) counted by "
                    "the **counsellor whose calendar** the contact's appointment is on (education "
                    "consultants), dated by when COE was reached.")
+
+
+# =====================================================================
+# WEEKLY REPORT TAB — Meta + GHL period report (Yearly/Quarterly/Monthly/
+# Weekly[Sat→Fri]/Daily), one column per period. Reuses the EXACT Executive
+# scorecard logic so every number reconciles with the Executive tab:
+#   Leads / Bookings / Showed  = vw_exec1_lead_detail  (created|revived cohort)
+#   COE / POC conversions      = vw_exec1_conversions
+#   Paid consults (Stripe)     = paid_consults_detail
+#   Meta spend/clicks/msg      = wbr_meta_daily (live, both accounts combined)
+# NO Melbourne/Sydney split — only Meta(paid) vs Organic segmentation.
+# =====================================================================
+if _active_tab == "Weekly Report":
+    from datetime import date as _rdate, timedelta as _rtd
+    fx = usd_to_aud()
+
+    st.markdown(
+        "<div class='panel-title'>Weekly Report"
+        "<span class='hint'>Meta + GHL · weeks run Sat→Fri · independent of the global filter</span></div>",
+        unsafe_allow_html=True)
+
+    _cA, _cB = st.columns([3, 2])
+    with _cA:
+        _gran = st.segmented_control(
+            "View", ["Yearly", "Quarterly", "Monthly", "Weekly", "Daily"],
+            default="Weekly", key="wr_gran") or "Weekly"
+    _maxn = {"Daily": 30, "Weekly": 16, "Monthly": 12, "Quarterly": 8, "Yearly": 4}[_gran]
+    _defn = {"Daily": 14, "Weekly": 8, "Monthly": 6, "Quarterly": 4, "Yearly": 2}[_gran]
+    with _cB:
+        _nshow = st.slider("Periods to compare", 1, _maxn, _defn, key="wr_n")
+
+    # ---- period math (Weekly = Saturday→Friday) ----
+    def _pstart(d):
+        if _gran == "Daily":     return d
+        if _gran == "Weekly":    return d - _rtd(days=(d.weekday() - 5) % 7)  # Sat on/before
+        if _gran == "Monthly":   return d.replace(day=1)
+        if _gran == "Quarterly": return d.replace(month=3 * ((d.month - 1) // 3) + 1, day=1)
+        return d.replace(month=1, day=1)                                       # Yearly
+
+    def _pend(s):
+        if _gran == "Daily":     return s
+        if _gran == "Weekly":    return s + _rtd(days=6)
+        if _gran == "Monthly":   return (s.replace(day=28) + _rtd(days=4)).replace(day=1) - _rtd(days=1)
+        if _gran == "Quarterly":
+            m = s.month + 3; y = s.year + (m - 1) // 12; m = (m - 1) % 12 + 1
+            return _rdate(y, m, 1) - _rtd(days=1)
+        return s.replace(month=12, day=31)
+
+    def _pprev(s):
+        if _gran == "Daily":     return s - _rtd(days=1)
+        if _gran == "Weekly":    return s - _rtd(days=7)
+        if _gran == "Monthly":   return (s - _rtd(days=1)).replace(day=1)
+        if _gran == "Quarterly": return _pstart(s - _rtd(days=1))
+        return s.replace(year=s.year - 1)
+
+    def _plabel(s):
+        if _gran in ("Daily", "Weekly"): return s.strftime("%d %b %y")
+        if _gran == "Monthly":   return s.strftime("%b %Y")
+        if _gran == "Quarterly": return f"Q{(s.month - 1) // 3 + 1} {s.year}"
+        return str(s.year)
+
+    _today = _rdate.today()
+    _periods = []
+    _s = _pstart(_today)
+    for _ in range(_nshow):
+        _periods.append((_s, min(_pend(_s), _today), _plabel(_s)))
+        _s = _pprev(_s)
+    _periods.reverse()                                # chronological (oldest → newest)
+    _cols = [lbl for _, _, lbl in _periods]
+    _lbl2span = {lbl: (a, b) for a, b, lbl in _periods}
+    _rsince = _periods[0][0].isoformat()
+    _runtil = _periods[-1][1].isoformat()
+
+    def _plabel_of(x):
+        try:
+            d = pd.Timestamp(x).date()
+        except Exception:
+            return None
+        return _plabel(_pstart(d))
+
+    st.caption(f"Comparing **{_nshow}** {_gran.lower()} periods · "
+               f"**{_periods[0][0].strftime('%d %b %Y')} → {_periods[-1][1].strftime('%d %b %Y')}** "
+               "· the most recent column may be a period still in progress.")
+
+    # ---- counsellor label mapping (calendar_name → 'First (service)') ----
+    def _wr_svc(nm):
+        if "Navneet Kaur" in nm:       return "education"   # runs free education consults
+        if "MARA" in nm:               return "visa"
+        if "Career Counsellor" in nm:  return "career"
+        return "education"
+    _clbl = {c["name"]: f"{c['name'].split(' - ')[0].split()[0]} ({_wr_svc(c['name'])})"
+             for c in COUNSELLORS}
+    _cid2lbl = {cid: _clbl[c["name"]] for c in COUNSELLORS for cid in c["calendar_ids"]}
+    _dcm = dict(db_exec("SELECT calendar_id, calendar_name FROM dim_calendars").fetchall())
+    _calname2lbl = {_dcm[cid]: lbl for cid, lbl in _cid2lbl.items() if cid in _dcm}
+    _CROWS = ["Gurbir (visa)", "Nasir (visa)", "Turab (career)", "Kajal (education)",
+              "Navneet (education)", "Saurab (education)", "Wajahad (education)"]
+
+    # ---- formatters ----
+    def _money(v):  return "—" if v is None or pd.isna(v) else f"${v:,.0f}"
+    def _money2(v): return "—" if v is None or pd.isna(v) else f"${v:,.2f}"
+    def _pct(v):    return "—" if v is None or pd.isna(v) else f"{v * 100:.0f}%"
+    def _intf(v):   return "0" if v is None or pd.isna(v) else f"{int(v):,}"
+
+    # ---- load once over the whole range ----
+    _md = wbr_meta_daily(_rsince, _runtil)
+    e1 = run_df("vw_exec1_lead_detail", {"since": _rsince, "until": _runtil, "city": "All"})
+    if not e1.empty:
+        # SAME lead universe as the Executive tab: drop 'No Activity' & 'Queries',
+        # and require a real email (bare records aren't leads).
+        e1 = e1[~e1["refined_source"].isin(["No Activity", "Queries"])].copy()
+        e1 = e1[e1["email"].fillna("").astype(str).str.strip() != ""].copy()
+        e1["plabel"] = e1["lead_date"].map(_plabel_of)
+    _conv = run_df("vw_exec1_conversions", {"since": _rsince, "until": _runtil})
+
+    # arrived cohort = leads that were CREATED or REVIVED in the window (matches
+    # the Executive 'Leads' scorecard); booked/showed are of THESE leads.
+    arr = (e1[(e1["is_created"] == 1) | (e1["is_revived"] == 1)].copy()
+           if not e1.empty else pd.DataFrame())
+
+    if e1.empty and (_md is None or _md.empty):
+        st.info("No data available in the selected range.")
+    else:
+        # =============== 1) META ADS (paid, combined) ===============
+        if _md is not None and not _md.empty:
+            _md = _md.copy(); _md["plabel"] = _md["date"].map(_plabel_of)
+            mg = _md.groupby("plabel").agg(spend=("spend", "sum"), impr=("impr", "sum"),
+                     clicks=("clicks", "sum"), link_clicks=("link_clicks", "sum"),
+                     msg=("msg", "sum"))
+        else:
+            mg = pd.DataFrame()
+        paid = arr[arr["refined_source"] == "Paid Social"] if not arr.empty else pd.DataFrame()
+        pg = (paid.groupby("plabel").agg(leads=("contact_id", "count"),
+                  booked=("appt_booked", "sum"), showed=("appt_showed", "sum"))
+              if not paid.empty else pd.DataFrame())
+
+        _META_ROWS = ["Total Spend (AUD)", "Link Clicks", "Cost Per Link Click", "CPM",
+                      "Messaging Conv. Started", "Leads", "CPL", "Appointment Booked",
+                      "Showed", "Cost Per Appt Booked", "Booking → Show rate"]
+        _mt = pd.DataFrame(index=_META_ROWS, columns=_cols, dtype=object)
+        for lbl in _cols:
+            sp   = (float(mg.loc[lbl, "spend"]) if lbl in mg.index else 0.0) * fx
+            impr = int(mg.loc[lbl, "impr"]) if lbl in mg.index else 0
+            lclk = int(mg.loc[lbl, "link_clicks"]) if lbl in mg.index else 0
+            msg  = int(mg.loc[lbl, "msg"]) if lbl in mg.index else 0
+            lds  = int(pg.loc[lbl, "leads"]) if lbl in pg.index else 0
+            bk   = int(pg.loc[lbl, "booked"]) if lbl in pg.index else 0
+            sh   = int(pg.loc[lbl, "showed"]) if lbl in pg.index else 0
+            _mt.loc["Total Spend (AUD)", lbl]   = _money(sp)
+            _mt.loc["Link Clicks", lbl]         = _intf(lclk)
+            _mt.loc["Cost Per Link Click", lbl] = _money2(sp / lclk) if lclk else "—"
+            _mt.loc["CPM", lbl]                 = _money2(sp / impr * 1000) if impr else "—"
+            _mt.loc["Messaging Conv. Started", lbl] = _intf(msg)
+            _mt.loc["Leads", lbl]               = _intf(lds)
+            _mt.loc["CPL", lbl]                 = _money2(sp / lds) if lds else "—"
+            _mt.loc["Appointment Booked", lbl]  = _intf(bk)
+            _mt.loc["Showed", lbl]              = _intf(sh)
+            _mt.loc["Cost Per Appt Booked", lbl] = _money2(sp / bk) if bk else "—"
+            _mt.loc["Booking → Show rate", lbl] = _pct(sh / bk) if bk else "—"
+        st.markdown("#### 📣 Meta Ads (paid) — combined")
+        st.dataframe(_mt, use_container_width=True)
+        st.caption(f"Spend/Link Clicks/CPM/Messaging from **Meta** (both accounts combined, "
+                   f"USD→AUD @ {fx:.2f}). **Leads** = new Paid-Social leads that arrived in the "
+                   "period (created/revived) · **Appointment Booked/Showed** = of those leads · "
+                   "CPL = Spend÷Leads · Cost/Appt = Spend÷Booked · Booking→Show = Showed÷Booked.")
+
+        # =============== 2) ORGANIC LEADS (combined) ===============
+        _SRC = {"Organic Search": "Organic Search Leads", "Social media": "Social Media Leads",
+                "Referral": "Referral Leads", "Walk-in": "Walk-in Leads", "Direct": "Direct Leads"}
+        org = arr[arr["refined_source"] != "Paid Social"].copy() if not arr.empty else pd.DataFrame()
+        if not org.empty:
+            org["srow"] = org["refined_source"].map(lambda s: _SRC.get(s, "Others Leads"))
+        _SROWS = ["Organic Search Leads", "Social Media Leads", "Referral Leads",
+                  "Walk-in Leads", "Direct Leads", "Others Leads"]
+        _OROWS = _SROWS + ["Organic Total Leads", "Appointment Booked", "Showed",
+                           "Booking → Show rate"]
+        _ot = pd.DataFrame(index=_OROWS, columns=_cols, dtype=object)
+        for lbl in _cols:
+            sub = org[org["plabel"] == lbl] if not org.empty else org
+            has = not org.empty and not sub.empty
+            tot = 0
+            for r in _SROWS:
+                n = int((sub["srow"] == r).sum()) if has else 0
+                _ot.loc[r, lbl] = _intf(n); tot += n
+            bk = int(sub["appt_booked"].sum()) if has else 0
+            sh = int(sub["appt_showed"].sum()) if has else 0
+            _ot.loc["Organic Total Leads", lbl] = _intf(tot)
+            _ot.loc["Appointment Booked", lbl]  = _intf(bk)
+            _ot.loc["Showed", lbl]              = _intf(sh)
+            _ot.loc["Booking → Show rate", lbl] = _pct(sh / bk) if bk else "—"
+        st.markdown("#### 🌱 Organic Leads — combined")
+        st.dataframe(_ot, use_container_width=True)
+        st.caption("Every non-Paid-Social lead that arrived in the period, by source — **same lead "
+                   "rule as the Executive tab**. Appointment Booked/Showed = of those leads.")
+
+        # =============== 3) BOOKINGS — by counsellor ===============
+        st.markdown("#### 🗓️ Bookings — by counsellor")
+        _bk = arr[arr["appt_booked"] == 1].copy() if not arr.empty else pd.DataFrame()
+        if not _bk.empty:
+            _bk["couns"] = _bk["calendar_name"].map(lambda n: _calname2lbl.get(n, "Other"))
+            _tc = (_bk.groupby(["couns", "plabel"]).size().unstack("plabel", fill_value=0)
+                   .reindex(index=_CROWS + ["Other"], columns=_cols, fill_value=0))
+            if int(_tc.loc["Other"].sum()) == 0:
+                _tc = _tc.drop(index="Other")
+            st.dataframe(_tc, use_container_width=True)
+        else:
+            st.caption("No booked leads in range.")
+        st.caption("Of the Paid + Organic leads above that **booked**, grouped by the counsellor who "
+                   "owns the booking's calendar. Column totals tie to Meta + Organic Appointment Booked.")
+
+        # =============== 4) COE + POC conversions — by counsellor ===============
+        if not _conv.empty and "conv_type" in _conv.columns:
+            _conv = _conv.copy()
+            _conv["couns"] = _conv["calendar_name"].map(lambda n: _calname2lbl.get(n))
+            _conv["plabel"] = _conv["changed_date"].map(_plabel_of)
+
+        def _conv_table(ctype, rows):
+            if _conv.empty or "conv_type" not in _conv.columns:
+                return None
+            sub = _conv[(_conv["conv_type"] == ctype) & (_conv["couns"].notna())]
+            if sub.empty:
+                return None
+            return (sub.groupby(["couns", "plabel"]).size().unstack("plabel", fill_value=0)
+                    .reindex(index=rows, columns=_cols, fill_value=0))
+
+        st.markdown("#### 🎓 COE Conversion — by counsellor")
+        _coe_t = _conv_table("COE", ["Kajal (education)", "Navneet (education)",
+                                     "Saurab (education)", "Wajahad (education)"])
+        if _coe_t is not None:
+            st.dataframe(_coe_t, use_container_width=True)
+        else:
+            st.caption("No COE conversions in range.")
+        st.caption("**COE** = reached 'COE Received'/'Initial Received' or Won in L2C-Education / "
+                   "CLT-Onshore Admission (same as the Executive Conversions scorecard), by the "
+                   "counsellor whose calendar the contact's appointment is on, dated when COE was reached.")
+
+        st.markdown("#### 🛂 POC Conversion — by counsellor")
+        _poc_t = _conv_table("POC", _CROWS)
+        if _poc_t is not None:
+            _poc_t = _poc_t.loc[_poc_t.sum(axis=1) > 0]
+        if _poc_t is not None and not _poc_t.empty:
+            st.dataframe(_poc_t, use_container_width=True)
+        else:
+            st.caption("No POC conversions in range.")
+        st.caption("**POC** = reached 'Application Submitted'/'Acknowledgment Sent + Doc' or Won in "
+                   "CLT-VISA (the Conversions scorecard's POC type), by counsellor.")
+
+        # =============== 5) GRAND TOTAL ===============
+        st.markdown("#### Σ Grand Total")
+        _coe_by_lbl = {}
+        if not _conv.empty and "conv_type" in _conv.columns:
+            _coe_by_lbl = (_conv[_conv["conv_type"] == "COE"]
+                           .groupby("plabel").size().to_dict())
+        _GROWS = ["Total Leads", "Bookings", "Showed", "COE Received", "Booking Rate", "Show Rate"]
+        _gt = pd.DataFrame(index=_GROWS, columns=_cols, dtype=object)
+        for lbl in _cols:
+            sub = arr[arr["plabel"] == lbl] if not arr.empty else arr
+            has = not arr.empty and len(sub)
+            tl = len(sub) if has else 0
+            bk = int(sub["appt_booked"].sum()) if has else 0
+            sh = int(sub["appt_showed"].sum()) if has else 0
+            _gt.loc["Total Leads", lbl]  = _intf(tl)
+            _gt.loc["Bookings", lbl]     = _intf(bk)
+            _gt.loc["Showed", lbl]       = _intf(sh)
+            _gt.loc["COE Received", lbl] = _intf(_coe_by_lbl.get(lbl, 0))
+            _gt.loc["Booking Rate", lbl] = _pct(bk / tl) if tl else "—"
+            _gt.loc["Show Rate", lbl]    = _pct(sh / bk) if bk else "—"
+        st.dataframe(_gt, use_container_width=True)
+
+        # =============== 6) CALENDAR SCHEDULING ===============
+        # Actual appointments by MEETING date (start_time), weekdays only, invalid
+        # excluded — like the Counsellors tab. Split paid/organic by the contact's
+        # lead source. Total Slots = 13 × counsellors × weekdays in the period.
+        st.markdown("#### 📅 Calendar Scheduling")
+        # Paid vs organic split uses the contact's stored canonical_source
+        # ('meta_paid' = paid), so it covers EVERY appointment's contact — not just
+        # leads that happened to arrive inside this window.
+        _ap = db_exec(
+            "SELECT a.contact_id, a.calendar_id, CAST(a.start_time AS DATE) sd, "
+            "LOWER(COALESCE(a.canonical_outcome,'')) outcome, "
+            "LOWER(COALESCE(c.canonical_source,'')) csrc "
+            "FROM fact_appointments a "
+            "LEFT JOIN fact_contacts c ON c.contact_id = a.contact_id "
+            "WHERE LOWER(COALESCE(a.appointment_status,'')) <> 'invalid' "
+            "AND CAST(a.start_time AS DATE) BETWEEN ? AND ? "
+            "AND DAYOFWEEK(CAST(a.start_time AS DATE)) NOT IN (0,6)",
+            [_rsince, _runtil]).fetchdf()
+        if not _ap.empty:
+            _ap["plabel"] = _ap["sd"].map(_plabel_of)
+            _ap["paid"]   = _ap["csrc"] == "meta_paid"
+            _ap["showed"] = _ap["outcome"] == "show"
+        _ncoun = len(COUNSELLORS)
+        _CS_ROWS = ["Bookings (Paid)", "Showed (Paid)", "Bookings (Organic)", "Showed (Organic)",
+                    "Total Booking", "Total Showed", "Total Slots", "Available Slots",
+                    "Fill Rate", "Show Rate"]
+        _cs = pd.DataFrame(index=_CS_ROWS, columns=_cols, dtype=object)
+        for lbl in _cols:
+            a, b = _lbl2span[lbl]
+            sub = _ap[_ap["plabel"] == lbl] if not _ap.empty else _ap
+            has = not _ap.empty and not sub.empty
+            bp = int(sub["paid"].sum()) if has else 0
+            sp = int((sub["paid"] & sub["showed"]).sum()) if has else 0
+            bo = int((~sub["paid"]).sum()) if has else 0
+            so = int((~sub["paid"] & sub["showed"]).sum()) if has else 0
+            tb, tsh = bp + bo, sp + so
+            slots = SLOTS_PER_DAY * _ncoun * count_weekdays(a, b)
+            _cs.loc["Bookings (Paid)", lbl]    = _intf(bp)
+            _cs.loc["Showed (Paid)", lbl]      = _intf(sp)
+            _cs.loc["Bookings (Organic)", lbl] = _intf(bo)
+            _cs.loc["Showed (Organic)", lbl]   = _intf(so)
+            _cs.loc["Total Booking", lbl]      = _intf(tb)
+            _cs.loc["Total Showed", lbl]       = _intf(tsh)
+            _cs.loc["Total Slots", lbl]        = _intf(slots)
+            _cs.loc["Available Slots", lbl]    = _intf(max(slots - tb, 0))
+            _cs.loc["Fill Rate", lbl]          = _pct(tb / slots) if slots else "—"
+            _cs.loc["Show Rate", lbl]          = _pct(tsh / tb) if tb else "—"
+        st.dataframe(_cs, use_container_width=True)
+        st.caption(f"Bookings = actual appointments by **meeting date** (start_time), weekdays only, "
+                   f"invalid excluded — paid vs organic by the contact's lead source. **Total Slots** "
+                   f"= {SLOTS_PER_DAY} × {_ncoun} counsellors × weekdays in the period "
+                   "(= 455 for a full Sat→Fri week). Available = Total Slots − Total Booking.")
+
+        # =============== 7) PAID CONSULTATIONS — Nasir / Gurbir / Turab ===============
+        st.markdown("#### 💳 Paid Consultations — Nasir · Gurbir · Turab")
+        _PAID_COUNS = ["Nasir", "Gurbir", "Turab"]
+        _paidcal = {cid: c["name"].split(" - ")[0].split()[0]
+                    for c in COUNSELLORS if c.get("is_paid")
+                    for cid in c["calendar_ids"]}
+        _pc_rows = []
+        for nm in _PAID_COUNS:
+            _pc_rows += [f"{nm} — Booked", f"{nm} — Showed", f"{nm} — Paid #", f"{nm} — Paid $"]
+        _pc = pd.DataFrame(index=_pc_rows, columns=_cols, dtype=object)
+        for lbl in _cols:
+            a, b = _lbl2span[lbl]
+            pcd = paid_consults_detail(a.isoformat(), b.isoformat())
+            subap = _ap[_ap["plabel"] == lbl] if not _ap.empty else _ap
+            for nm in _PAID_COUNS:
+                cal_ids = [cid for cid, n in _paidcal.items() if n == nm]
+                if not _ap.empty and not subap.empty:
+                    m = subap[subap["calendar_id"].isin(cal_ids)]
+                    bk = len(m); sh = int(m["showed"].sum())
+                else:
+                    bk = sh = 0
+                if pcd is not None and not pcd.empty and "counsellor" in pcd.columns:
+                    pn = pcd[pcd["counsellor"].astype(str).str.startswith(nm)]
+                    pcnt = len(pn)
+                    pamt = float(pn["net"].sum()) if "net" in pn.columns else 0.0
+                else:
+                    pcnt, pamt = 0, 0.0
+                _pc.loc[f"{nm} — Booked", lbl] = _intf(bk)
+                _pc.loc[f"{nm} — Showed", lbl] = _intf(sh)
+                _pc.loc[f"{nm} — Paid #", lbl] = _intf(pcnt)
+                _pc.loc[f"{nm} — Paid $", lbl] = _money(pamt)
+        st.dataframe(_pc, use_container_width=True)
+        st.caption("Booked/Showed = appointments on each paid counsellor's calendar by meeting date. "
+                   "**Paid #/$** = Stripe succeeded charges matched to that counsellor "
+                   "(same paid_consults_detail source as the Counsellors tab).")
 
 
 # =====================================================================
