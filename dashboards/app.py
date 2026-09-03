@@ -5501,20 +5501,30 @@ if _active_tab == "Executive":
                     "#15803d" if up else "#dc2626")
 
         # ---- master by-source summary (drives the per-card summary tables) ----
-        # Only these five buckets show as their own row (renamed for display);
-        # every other source (Returning Client, Direct, Direct Bookings, Agentcis,
-        # Unknown, Direct call, SMS, Web Chat, Email, Other/Unknown, ...) folds into
-        # "Others". Queries keep their own row (separate scorecard). The granular
-        # refined_source stays on e1 for the Others / Social drill-downs.
-        SRC_RENAME = {"Paid Social": "Paid Leads", "Organic Search": "Organic Search",
+        # Only these buckets show as their own row (renamed for display); every
+        # other source (Returning Client, Direct Bookings, Agentcis, Unknown,
+        # Direct call, SMS, Web Chat, Email, ...) folds into "Others". Queries keep
+        # their own row (separate scorecard). The granular refined_source stays on
+        # e1 for the Others / Social drill-downs.
+        # Paid advertising rolls up into ONE "Paid Leads" row: Meta Ads (Paid Social)
+        # + Google Ads (Paid Search, from the form's event_source). Click the row for
+        # the per-platform split — see the "Paid Leads" drill below.
+        SRC_RENAME = {"Paid Social": "Paid Leads", "Paid Search": "Paid Leads",
+                      "Organic Search": "Organic Search",
                       "Social media": "Social Media", "Referral": "Referrals",
                       "Walk-in": "Walk-in", "Direct": "Direct"}
+        # sub-category shown when the Paid Leads row is drilled into
+        PAID_CHANNEL = {"Paid Social": "Meta Ads", "Paid Search": "Google Ads"}
 
         def _src_group(s):
             if s == "Queries":
                 return "Queries"
             return SRC_RENAME.get(s, "Others")
         e1["src_group"] = e1["refined_source"].map(_src_group)
+        e1["paid_channel"] = e1["refined_source"].map(PAID_CHANNEL)
+        if not e1p.empty:
+            e1p = e1p.copy()
+            e1p["paid_channel"] = e1p["refined_source"].map(PAID_CHANNEL)
         src = (e1.groupby("src_group")
                .agg(Leads=("contact_id", "count"), Opportunities=("n_opps", "sum"),
                     Booked=("appt_booked", "sum"), Showed=("appt_showed", "sum"))
@@ -5887,6 +5897,13 @@ if _active_tab == "Executive":
                             if not e1p.empty else None)
                     base, ttl = _nested(e1[e1["src_group"] == "Others"], "refined_source",
                                         "Sub-source", "e1_others_sel", prior_df=_opr)
+                elif picked == "Paid Leads":
+                    st.markdown("**Paid Leads — by ad platform** (Meta Ads · Google Ads — "
+                                "click a row)")
+                    base, ttl = _nested(e1[e1["src_group"] == "Paid Leads"], "paid_channel",
+                                        "Ad Platform", "e1_paid_sel",
+                                        prior_df=(e1p[e1p["refined_source"].isin(PAID_CHANNEL)]
+                                                  if not e1p.empty else None))
                 elif picked == "Social Media":
                     st.markdown("**Social Media — by platform** (Instagram · LinkedIn · TikTok · "
                                 "WhatsApp · Facebook — click a row)")
@@ -6081,9 +6098,16 @@ if _active_tab == "Executive":
 
         # Split Leads by acquisition channel: Paid Social (Meta) vs Organic
         # (every other source).
+        # Meta is kept as its own figure — it is the number reconciled against the
+        # Meta Ads tab. Google Ads is called out separately so this line still adds
+        # up to the "Paid Leads" row in the by-source table (Meta + Google).
         n_meta_leads = int((leads_df["refined_source"] == "Paid Social").sum())
-        n_organic_leads = n_leads - n_meta_leads
-        sub = f"{n_meta_leads:,} Paid Leads · {n_organic_leads:,} Organic / other"
+        n_gads_leads = int((leads_df["refined_source"] == "Paid Search").sum())
+        n_organic_leads = n_leads - n_meta_leads - n_gads_leads
+        sub = f"{n_meta_leads:,} Meta Ads · "
+        if n_gads_leads:
+            sub += f"{n_gads_leads:,} Google Ads · "
+        sub += f"{n_organic_leads:,} Organic / other"
         kc = st.columns(3)
         _e1_scorecard(kc[0], "Leads", f"{n_leads:,}", sub,
                       _delta_md(n_leads, p_leads, higher_is_better=True, fmt="pct"))
@@ -6846,14 +6870,28 @@ if _active_tab == "Sales Team Perf.":
     _pp = ",".join(["?"] * len(_fp_pipes))
     _s, _u = since.isoformat(), until.isoformat()
 
+    # An opp can be MOVED to another pipeline after it is created (an L2C-Education
+    # lead that converts is pushed to CLT - Onshore Admission). Qualifying rows on the
+    # opp's CURRENT pipeline therefore silently drops leads the reps genuinely worked
+    # in L2C. Qualify on the pipeline the opp STARTED in — the earliest stage event —
+    # falling back to the current pipeline for opps with no stage history yet.
+    _ORIGIN_CTE = (
+        "WITH opp_origin AS ("
+        "  SELECT opportunity_id, arg_min(pipeline, changed_at) AS origin_pipeline, "
+        "         arg_min(new_stage, changed_at) AS origin_stage "
+        "  FROM fact_opp_stage_events WHERE pipeline IS NOT NULL GROUP BY 1) ")
+
     # ---- Opportunities CREATED in range (Total Opportunities + owner-table base) ----
     _opps = db_exec(
+        _ORIGIN_CTE +
         f"SELECT o.opportunity_id, o.contact_id, o.assigned_user_id, o.status AS opp_status, "
-        f"       s.stage_name AS cur_stage, p.pipeline_name "
+        f"       s.stage_name AS cur_stage, p.pipeline_name, "
+        f"       COALESCE(oo.origin_pipeline, p.pipeline_name) AS origin_pipeline "
         f"FROM fact_opportunities o "
         f"JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id "
         f"JOIN dim_stages s ON s.stage_id = o.stage_id "
-        f"WHERE p.pipeline_name IN ({_pp}) "
+        f"LEFT JOIN opp_origin oo ON oo.opportunity_id = o.opportunity_id "
+        f"WHERE COALESCE(oo.origin_pipeline, p.pipeline_name) IN ({_pp}) "
         f"  AND CAST(o.created_at + INTERVAL 10 HOUR AS DATE) BETWEEN ? AND ?",
         _fp_pipes + [_s, _u]).fetchdf()
     total_opps = int(_opps["opportunity_id"].nunique()) if not _opps.empty else 0
@@ -6920,16 +6958,41 @@ if _active_tab == "Sales Team Perf.":
 
     # ---- Scorecard record-sets ----
     def _stage_change_contacts(stages):
+        """Contacts whose opp ENTERED one of `stages` inside the range.
+
+        Two sources, unioned and de-duplicated:
+          (a) an explicit stage-change event landing on the stage, and
+          (b) an opp CREATED in the range that STARTED in that stage. A lead created
+              straight into a stage is not a "change", and its creation activity log
+              can lag a run (a stage move does not bump the conversation, so the
+              harvest can miss it) — without (b) those leads are never counted.
+        """
         _sp = ",".join(["?"] * len(stages))
+        _cids = []
         try:
-            return db_exec(
+            _cids += db_exec(
                 f"SELECT DISTINCT contact_id FROM fact_opp_stage_events "
                 f"WHERE pipeline IN ({_pp}) AND new_stage IN ({_sp}) "
                 f"  AND CAST(changed_at + INTERVAL 10 HOUR AS DATE) BETWEEN ? AND ? "
                 f"  AND contact_id IS NOT NULL",
                 _fp_pipes + stages + [_s, _u]).fetchdf()["contact_id"].tolist()
         except Exception:
-            return []
+            pass
+        try:
+            _cids += db_exec(
+                _ORIGIN_CTE +
+                f"SELECT DISTINCT o.contact_id FROM fact_opportunities o "
+                f"JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id "
+                f"JOIN dim_stages s ON s.stage_id = o.stage_id "
+                f"LEFT JOIN opp_origin oo ON oo.opportunity_id = o.opportunity_id "
+                f"WHERE COALESCE(oo.origin_pipeline, p.pipeline_name) IN ({_pp}) "
+                f"  AND COALESCE(oo.origin_stage, s.stage_name) IN ({_sp}) "
+                f"  AND CAST(o.created_at + INTERVAL 10 HOUR AS DATE) BETWEEN ? AND ? "
+                f"  AND o.contact_id IS NOT NULL",
+                _fp_pipes + stages + [_s, _u]).fetchdf()["contact_id"].tolist()
+        except Exception:
+            pass
+        return list(dict.fromkeys(_cids))
     _nl_cids  = _stage_change_contacts(["New Lead"])
     _bls_cids = _stage_change_contacts(["Booking Link Shared"])
     n_new_leads = len(set(_nl_cids))
@@ -6939,6 +7002,7 @@ if _active_tab == "Sales Team Perf.":
     # for contacts with an opp in the selected pipeline[s] — irrespective of lead date.
     try:
         _ab = db_exec(
+            _ORIGIN_CTE +
             f"SELECT a.contact_id, a.appointment_id, LOWER(COALESCE(a.canonical_outcome,'')) AS outcome, "
             f"       dc.calendar_name, a.date_added "
             f"FROM fact_appointments a LEFT JOIN dim_calendars dc ON dc.calendar_id = a.calendar_id "
@@ -6946,7 +7010,8 @@ if _active_tab == "Sales Team Perf.":
             f"  AND LOWER(COALESCE(a.appointment_status,'')) NOT IN ('cancelled', 'invalid') "
             f"  AND a.contact_id IN (SELECT DISTINCT o.contact_id FROM fact_opportunities o "
             f"      JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id "
-            f"      WHERE p.pipeline_name IN ({_pp}))",
+            f"      LEFT JOIN opp_origin oo ON oo.opportunity_id = o.opportunity_id "
+            f"      WHERE COALESCE(oo.origin_pipeline, p.pipeline_name) IN ({_pp}))",
             [_s, _u] + _fp_pipes).fetchdf()
     except Exception:
         _ab = pd.DataFrame(columns=["contact_id", "appointment_id", "outcome", "calendar_name", "date_added"])
@@ -6961,12 +7026,13 @@ if _active_tab == "Sales Team Perf.":
     # ---- owner mapping + person-credit for the created-in-range opps ----
     _owners = dict(db_exec("SELECT user_id, full_name FROM dim_users").fetchall())
 
-    # Stage buckets. For the LATER stages the opp has moved to a counsellor (who becomes
-    # the owner) and the sales rep is only a FOLLOWER — so those buckets are credited by
-    # follower, not owner. Early stages stay owner-credited.
+    # Stage buckets. Once an opp is handed to a counsellor the counsellor becomes the
+    # OWNER and the sales rep stays on only as a FOLLOWER — so a rep is credited when
+    # they are the owner OR a follower. Keying the follower credit off a fixed set of
+    # "later" buckets used to lose reps on every other counsellor-owned stage
+    # (No Show, and anything bucketed Later Stage).
     FP_BUCKETS = ["New Lead", "In Communication", "Cold Lead", "Booking Link Shared",
                   "Appointment Booked", "Post Consultation", "No Show", "Later Stage"]
-    FOLLOWER_BUCKETS = {"Appointment Booked", "Post Consultation"}
 
     def _fp_bucket(s):
         s = str(s or "")
@@ -6977,7 +7043,7 @@ if _active_tab == "Sales Team Perf.":
         return s if s in FP_BUCKETS else "Later Stage"
 
     _cred_cols = ["opportunity_id", "contact_id", "bucket", "cur_stage",
-                  "pipeline_name", "opp_status", "Owner", "Person"]
+                  "pipeline_name", "origin_pipeline", "opp_status", "Owner", "Person"]
     if _opps.empty:
         _credited = pd.DataFrame(columns=_cred_cols)
     else:
@@ -6993,15 +7059,33 @@ if _active_tab == "Sales Team Perf.":
         except Exception:
             _fdf = pd.DataFrame(columns=["opportunity_id", "Person"])
         _base_cols = ["opportunity_id", "contact_id", "bucket", "cur_stage",
-                      "pipeline_name", "opp_status", "Owner"]
+                      "pipeline_name", "origin_pipeline", "opp_status", "Owner"]
         # early stages → credit the OWNER (the rep owns the lead)
-        _early = _opps[~_opps["bucket"].isin(FOLLOWER_BUCKETS)
-                       & _opps["Owner"].isin(FP_OWNERS)][_base_cols].copy()
-        _early["Person"] = _early["Owner"]
-        # later stages → credit the FOLLOWER rep (Owner shown is the counsellor)
-        _late = (_opps[_opps["bucket"].isin(FOLLOWER_BUCKETS)][_base_cols]
-                 .merge(_fdf, on="opportunity_id", how="inner"))
-        _credited = (pd.concat([_early, _late], ignore_index=True)
+        # rep OWNS the opp (early stages, before the counsellor hand-off)
+        _by_owner = _opps[_opps["Owner"].isin(FP_OWNERS)][_base_cols].copy()
+        _by_owner["Person"] = _by_owner["Owner"]
+        # rep FOLLOWS the opp — any stage. Once a counsellor takes ownership this is
+        # the only trace the rep worked the lead.
+        _by_foll = _opps[_base_cols].merge(_fdf, on="opportunity_id", how="inner")
+        # Last resort: the opp itself carries no rep (e.g. it was moved to a
+        # counsellor pipeline and re-followed by that team). Fall back to a rep who
+        # follows ANOTHER opp of the same contact, so the lead is not dropped.
+        _has_rep = set(_by_owner["opportunity_id"]) | set(_by_foll["opportunity_id"])
+        _orphan = _opps[~_opps["opportunity_id"].isin(_has_rep)][_base_cols]
+        if _orphan.empty:
+            _by_contact = pd.DataFrame(columns=list(_base_cols) + ["Person"])
+        else:
+            try:
+                _cfoll = db_exec(
+                    "SELECT DISTINCT o.contact_id, f.follower_user_id "
+                    "FROM fact_opportunity_followers f "
+                    "JOIN fact_opportunities o ON o.opportunity_id = f.opportunity_id").fetchdf()
+                _cfoll["Person"] = _cfoll["follower_user_id"].map(_owners)
+                _cfoll = _cfoll[_cfoll["Person"].isin(FP_OWNERS)][["contact_id", "Person"]]
+            except Exception:
+                _cfoll = pd.DataFrame(columns=["contact_id", "Person"])
+            _by_contact = _orphan.merge(_cfoll, on="contact_id", how="inner")
+        _credited = (pd.concat([_by_owner, _by_foll, _by_contact], ignore_index=True)
                      .drop_duplicates(subset=["opportunity_id", "Person"]))
 
     # ---- Scorecards (click a card → drill into its contacts) ----
@@ -7023,8 +7107,10 @@ if _active_tab == "Sales Team Perf.":
         if _col.button(f"{_lbl.upper()}\n\n{_val:,}", key=f"stp_card_{_lbl}",
                        use_container_width=True):
             _stp_drill(_lbl, _stp_detail(_cids, _calm))
-    st.caption("**New Leads / Booking Link Shared** = opportunities whose stage **changed to** that "
-               "stage within the range (L2C-Education / L2C-VISA). **Appointment Booked** = appointments "
+    st.caption("**New Leads / Booking Link Shared** = opportunities that **entered** that stage within "
+               "the range — either a stage change onto it, or an opp **created straight into** it "
+               "(L2C-Education / L2C-VISA, judged on the pipeline the opp **started in**, so leads later "
+               "pushed to CLT still count). **Appointment Booked** = appointments "
                "**created** in the range (slots filled — excludes cancelled & invalid), irrespective of "
                "when the lead/opp was created. **Showed** = of those appointments, the one attended "
                "(status = show). **Click any card** for the email list (stage · pipeline · status · phone "
@@ -7089,11 +7175,13 @@ if _active_tab == "Sales Team Perf.":
         _sel_o = st.dataframe(_disp, hide_index=True, use_container_width=True,
                               on_select="rerun", selection_mode="single-row", key="fp_owner_sel",
                               height=min(320, 70 + 36 * len(_disp)))
-        st.caption("Opportunities **created in the range** (L2C-Education / L2C-VISA), bucketed by "
-                   "**current** stage. Early stages (New Lead → Booking Link Shared, Cold Lead) are "
-                   "credited to the opp's **owner**; **Appointment Booked** and **Post Consultation** are "
-                   "credited to the sales rep as a **follower** (at those stages the owner is the "
-                   "counsellor). **Later Stage** = any stage beyond these. **Click a row to list that "
+        st.caption("Opportunities **created in the range** that **started in** L2C-Education / "
+                   "L2C-VISA (an opp later pushed to a CLT pipeline still counts), bucketed by "
+                   "**current** stage. A rep is credited when they are the opp's **owner** *or* one of "
+                   "its **followers** — after the counsellor hand-off the owner is the counsellor and "
+                   "following is the only trace the rep worked the lead. If an opp carries no rep at "
+                   "all, it falls back to a rep following another opp of the same contact. "
+                   "**Later Stage** = any stage beyond these. **Click a row to list that "
                    "person's contacts below.**")
 
         # ---- Drill: click a person → their contacts; no selection → all ----
@@ -7136,6 +7224,7 @@ if _active_tab == "Sales Team Perf.":
                 "Email": _det["contact_id"].map(_em_m).fillna("(no email)").replace("", "(no email)").values,
                 "Stage": _det["cur_stage"].fillna("—").values,
                 "Pipeline": _det["pipeline_name"].fillna("—").values,
+                "Started In": _det["origin_pipeline"].fillna("—").values,
                 "Lead Arvl Date": _det["contact_id"].map(_ld_m).map(
                     lambda v: pd.to_datetime(v).strftime("%Y-%m-%d") if pd.notna(v) else "—").values,
                 "Owner": _det["Owner"].values,
@@ -7148,10 +7237,12 @@ if _active_tab == "Sales Team Perf.":
                     lambda v: str(int(v)) if pd.notna(v) else "—").values,
             })
             st.dataframe(_detail, hide_index=True, use_container_width=True, height=460)
-            st.caption("**Owner** is the opportunity's assigned user — a counsellor for the "
-                       "Appointment-Booked / Post-Consultation rows (the rep is the follower there). "
-                       "**Lead Arvl Date** = lead created/revived date · **Follow up** = the number in the "
-                       "contact's `l2c-follow-up-N` tag (blank until the ETL ingests tags).")
+            st.caption("**Owner** is the opportunity's assigned user — a counsellor once the lead is "
+                       "handed over (the rep is a follower from then on). **Pipeline** is where the opp "
+                       "sits now, **Started In** the pipeline it was created in (rows qualify on "
+                       "*Started In*). **Lead Arvl Date** = lead created/revived date · **Follow up** = "
+                       "the number in the contact's `l2c-follow-up-N` tag (blank until the ETL ingests "
+                       "tags).")
 
 # =====================================================================
 # WBR — Weekly Business Review (independent of the global date filter)
