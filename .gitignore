@@ -25,3 +25,11 @@ _newtab*.txt
 # --- OS noise ---
 .DS_Store
 Thumbs.db
+
+# --- Vercel / Next.js frontend ---
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+.vercel

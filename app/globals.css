@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+/* Design tokens lifted from the Streamlit app's injected CSS (app.py ~line 780)
+   so the port looks like the dashboard the team already knows: warm cream
+   canvas, white cards with a hairline border, dark slate active pill. */
+@theme {
+  --color-canvas: #f3f0e9;
+  --color-card: #ffffff;
+  --color-hairline: #e6e8eb;
+  --color-ink: #111111;
+  --color-ink-soft: #475569;
+  --color-ink-faint: #7a8189;
+  --color-hint: #9aa0a6;
+  --color-active: #1e293b;
+  --color-up: #15803d;
+  --color-down: #b91c1c;
+}
+
+html,
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+}
+
+/* Wide tables scroll inside their own card rather than the page. */
+.table-scroll {
+  overflow-x: auto;
+}
+
+.table-scroll table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+
+.table-scroll th {
+  position: sticky;
+  top: 0;
+  background: #f8fafc;
+  text-align: left;
+  font-weight: 600;
+  color: var(--color-ink-soft);
+  white-space: nowrap;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-hairline);
+}
+
+.table-scroll td {
+  padding: 7px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  white-space: nowrap;
+}
+
+.table-scroll tbody tr:hover td {
+  background: #fafafa;
+}
+
+/* Numeric columns read far better right-aligned and tabular. */
+.table-scroll td.num,
+.table-scroll th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}

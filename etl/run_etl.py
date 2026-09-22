@@ -68,11 +68,18 @@ def init_database() -> duckdb.DuckDBPyConnection:
     if md:
         dbname = os.getenv("MOTHERDUCK_DATABASE", "migration")
         con = duckdb.connect(f"md:{dbname}?motherduck_token={md}")
+        # Pin the session timezone. Timestamps arrive from the APIs tz-aware (UTC);
+        # writing them into a naive TIMESTAMP column casts TIMESTAMPTZ -> TIMESTAMP
+        # using THIS setting. Left unset it defaults to the machine's local zone, so
+        # a laptop in UTC+5 silently stored local time while GitHub Actions stored
+        # UTC — and every dashboard view (+10h -> AEST) assumes UTC.
+        con.execute("SET TimeZone='UTC'")
         con.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
         logger.info("DB initialized on MotherDuck (%s)", dbname)
         return con
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(DB_PATH))
+    con.execute("SET TimeZone='UTC'")   # see note above — store UTC, never local time
     con.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
     logger.info("DB initialized at %s", DB_PATH)
     return con
@@ -164,6 +171,83 @@ def rebuild_stage_observations(con) -> dict:
 # ---------------------------------------------------------------------
 # Extract steps
 # ---------------------------------------------------------------------
+
+def reconcile_missing_contacts(con, cf_key_by_id: dict, lookback_days: int = 30,
+                               limit: int = 500) -> dict:
+    """Back-fill contacts that other GHL facts reference but fact_contacts lacks.
+
+    Every lead view starts `FROM fact_contacts`, so a contact the /contacts/ scan
+    missed is invisible to the dashboard even when its opportunity, appointment or
+    form submission DID land (those feeds have server-side date filters and are
+    not affected). That produced real leads — e.g. a contact who filled a form —
+    that appear nowhere in the Leads card.
+
+    This closes the gap from the other side: any contact_id referenced by a fact
+    row inside the lookback window but absent from fact_contacts is fetched
+    individually via /contacts/{id} and upserted. Bounded by `limit` per run;
+    contacts deleted in GHL return {} and are simply skipped.
+    """
+    cutoff = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    try:
+        rows = con.execute(
+            """
+            WITH referenced AS (
+                SELECT contact_id FROM fact_opportunities
+                 WHERE contact_id IS NOT NULL
+                   AND (CAST(created_at AS DATE) >= ? OR CAST(updated_at AS DATE) >= ?)
+                UNION
+                SELECT contact_id FROM fact_appointments
+                 WHERE contact_id IS NOT NULL AND CAST(date_added AS DATE) >= ?
+                UNION
+                SELECT contact_id FROM fact_form_submissions
+                 WHERE contact_id IS NOT NULL AND CAST(submitted_at AS DATE) >= ?
+                UNION
+                SELECT contact_id FROM fact_survey_submissions
+                 WHERE contact_id IS NOT NULL AND CAST(submitted_at AS DATE) >= ?
+                UNION
+                SELECT contact_id FROM fact_payments
+                 WHERE contact_id IS NOT NULL AND CAST(created_at AS DATE) >= ?
+                UNION
+                -- Conversations matter most here: a Facebook Lead Form lead creates
+                -- NO row in /forms/submissions, so before its opportunity exists the
+                -- conversation is the only trace the contact was ever missed.
+                SELECT contact_id FROM fact_conversations
+                 WHERE contact_id IS NOT NULL AND CAST(last_message_at AS DATE) >= ?
+            )
+            SELECT r.contact_id FROM referenced r
+            LEFT JOIN fact_contacts c ON c.contact_id = r.contact_id
+            WHERE c.contact_id IS NULL
+            LIMIT ?
+            """,
+            [cutoff, cutoff, cutoff, cutoff, cutoff, cutoff, cutoff, limit],
+        ).fetchall()
+    except Exception as e:
+        logger.exception("missing-contact reconcile query failed: %s", e)
+        return {}
+
+    missing = [r[0] for r in rows if r and r[0]]
+    if not missing:
+        logger.info("  contact reconcile: none missing (lookback %dd)", lookback_days)
+        return {"fact_contacts_reconciled": 0}
+
+    fetched = []
+    for cid in missing:
+        try:
+            c = ghl.fetch_contact(cid)
+        except Exception:
+            logger.warning("  contact reconcile: fetch %s failed", cid)
+            continue
+        if c and c.get("id"):
+            fetched.append(c)
+
+    n = 0
+    if fetched:
+        df = normalize.normalize_contacts(fetched, cf_key_by_id)
+        n = upsert_df(con, "fact_contacts", df, "contact_id")
+    logger.info("  contact reconcile: %d referenced but missing, %d recovered "
+                "(lookback %dd)", len(missing), n, lookback_days)
+    return {"fact_contacts_reconciled": n}
+
 
 def extract_ghl(con, since: str, until: str) -> dict:
     logger.info("== GHL ==")
@@ -393,6 +477,14 @@ def extract_ghl(con, since: str, until: str) -> dict:
                         len(todo), n_extra)
         except Exception as e:
             logger.exception("GHL changed-opp stage harvest failed: %s", e)
+
+        # Last: recover any contact the /contacts/ scan missed but whose
+        # opportunity / appointment / form submission DID land. Runs after every
+        # other GHL fact so it sees the full set of referenced contact ids.
+        try:
+            summary.update(reconcile_missing_contacts(con, cf_key_by_id))
+        except Exception as e:
+            logger.exception("GHL contact reconcile failed: %s", e)
 
         return summary
     except Exception as e:

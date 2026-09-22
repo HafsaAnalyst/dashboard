@@ -1,0 +1,33 @@
+{
+  "name": "migration-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "next": "^15.5.25",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "swr": "2.3.6",
+    "vega": "5.30.0",
+    "vega-embed": "6.29.0",
+    "vega-lite": "5.21.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.1.13",
+    "@types/node": "22.10.2",
+    "@types/react": "19.1.9",
+    "@types/react-dom": "19.1.7",
+    "tailwindcss": "4.1.13",
+    "typescript": "5.7.3"
+  },
+  "allowScripts": {
+    "@tailwindcss/oxide@4.1.13": true,
+    "sharp@0.34.5": true
+  }
+}

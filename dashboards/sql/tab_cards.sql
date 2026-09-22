@@ -1877,11 +1877,13 @@ SELECT * REPLACE (
     -- only filled the form / revived now) — not a booking driven by this lead.
     CASE WHEN appt_booked = 1 AND appt_booked_date >= lead_date THEN 1 ELSE 0 END AS appt_booked,
     CASE WHEN appt_showed = 1 AND appt_booked_date >= lead_date THEN 1 ELSE 0 END AS appt_showed,
+    CASE WHEN appt_upcoming = 1 AND appt_booked_date >= lead_date THEN 1 ELSE 0 END AS appt_upcoming,
     -- ...and blank the appointment's display fields (created date / calendar /
     -- status / title) for that same pre-revival case, so the table shows the
     -- RECENT (post-revival) appointment only — never an old one the lead booked
     -- before being revived.
     CASE WHEN appt_booked_date >= lead_date THEN appt_booked_date ELSE NULL END AS appt_booked_date,
+    CASE WHEN appt_booked_date >= lead_date THEN appt_start_date  ELSE NULL END AS appt_start_date,
     CASE WHEN appt_booked_date >= lead_date THEN calendar_name     ELSE NULL END AS calendar_name,
     CASE WHEN appt_booked_date >= lead_date THEN appt_status       ELSE NULL END AS appt_status
 )
@@ -2107,6 +2109,16 @@ SELECT
     a.appointment_status AS appt_status,
     CASE WHEN a.contact_id IS NOT NULL THEN 1 ELSE 0 END                   AS appt_booked,
     CASE WHEN LOWER(COALESCE(a.canonical_outcome,'')) = 'show' THEN 1 ELSE 0 END AS appt_showed,
+    -- Upcoming = a booked appointment that has NOT happened yet: its start time is
+    -- still in the future and the outcome is unresolved ('pending' — GHL 'confirmed').
+    -- These already count as Booked; the flag lets the UI show how much of Booked is
+    -- still to come, so a low Show Rate on a recent range reads as "not yet attended"
+    -- rather than "did not attend". start_time is UTC, as is now() AT TIME ZONE 'UTC'.
+    CASE WHEN a.contact_id IS NOT NULL
+              AND a.start_time > (now() AT TIME ZONE 'UTC')
+              AND LOWER(COALESCE(a.canonical_outcome,'')) = 'pending'
+         THEN 1 ELSE 0 END                                                 AS appt_upcoming,
+    CAST(a.start_time + INTERVAL 10 HOUR AS DATE)                          AS appt_start_date,
     CAST(a.date_added + INTERVAL 10 HOUR AS DATE)                          AS appt_booked_date,
     a.title                                                                AS notes,
     COALESCE(oc.n_opps, 0)                                                 AS n_opps,

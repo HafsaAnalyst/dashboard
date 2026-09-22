@@ -22,6 +22,10 @@ BASE_URL = "https://services.leadconnectorhq.com"
 API_VERSION = "2021-07-28"
 PAGE_LIMIT = 100
 MAX_PAGES = 500
+# How many CONSECUTIVE fully-out-of-window pages to tolerate before giving up
+# on a date-bounded scan. GHL's list endpoints are not guaranteed to be ordered
+# by dateAdded, so a single stale page is not proof the window is exhausted.
+STALE_PAGE_GRACE = 3
 HTTP_TIMEOUT = 30
 
 
@@ -117,12 +121,20 @@ def fetch_custom_fields() -> list[dict]:
 
 def fetch_contacts(since: str, until: Optional[str] = None) -> list[dict]:
     """Contacts with dateAdded in [since, until]. Filtered in memory because
-    /contacts/ doesn't expose a server-side date filter — paginated DESC by
-    dateAdded so we can stop early."""
+    /contacts/ doesn't expose a server-side date filter.
+
+    The scan stops early once STALE_PAGE_GRACE consecutive pages contain NO
+    contact inside the window. It deliberately does NOT stop on the first such
+    page: /contacts/ is not guaranteed to be ordered by dateAdded (an older
+    contact that was recently updated can surface anywhere in the list), and the
+    previous "break as soon as the LAST item on a page predates `since`" rule
+    silently dropped every contact behind that item — leads that had filled a
+    form still went missing from fact_contacts."""
     until = until or _today()
     all_items: list[dict] = []
     start_after, start_after_id = None, None
     pages = 0
+    stale_pages = 0
     while pages < MAX_PAGES:
         params: dict = {"locationId": _location_id(), "limit": PAGE_LIMIT}
         if start_after and start_after_id:
@@ -142,12 +154,18 @@ def fetch_contacts(since: str, until: Optional[str] = None) -> list[dict]:
             break
         all_items.extend(items)
         meta = body.get("meta", {})
-        start_after = meta.get("startAfter")
-        start_after_id = meta.get("startAfterId")
+        # accept both cursor spellings — same as fetch_opportunities; with only
+        # `startAfterId` the scan stopped dead at page 1 if GHL returned the
+        # `nextPage*` form.
+        start_after = meta.get("nextPageStart") or meta.get("startAfter")
+        start_after_id = meta.get("nextPageId") or meta.get("startAfterId")
         pages += 1
-        oldest = items[-1].get("dateAdded", "")[:10]
-        if oldest and oldest < since:
-            break
+        if any((c.get("dateAdded") or "")[:10] >= since for c in items):
+            stale_pages = 0
+        else:
+            stale_pages += 1
+            if stale_pages >= STALE_PAGE_GRACE:
+                break
         if not start_after_id:
             break
     in_range = [

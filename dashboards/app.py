@@ -151,7 +151,7 @@ YAML_PATH = ROOT / "dashboards" / "metrics.yaml"
 SLOTS_PER_DAY = 13
 
 # city = the counsellor's office location, NOT the contact's city.
-# Per Marketing Lead: Gurbir Singh + Navneet Kaur work out of Melbourne;
+# Per Marketing Lead: Gurbir Singh + Tanvir Kaur work out of Melbourne;
 # everyone else works out of Sydney.
 COUNSELLORS = [
     # ---- Paid Consultations ----
@@ -199,10 +199,14 @@ COUNSELLORS = [
         "city": "Sydney",
     },
     {
-        "name": "Navneet Kaur - Career Counsellor",
-        "calendar_ids": ["XJS0nt92447DgYSmxVkP", "hkL937P7e6XTzy58dOZ7"],
-        "is_paid": False,
-        "type": "Free",
+        # Replaced Navneet Kaur (her two calendars went inactive after Aug 2026).
+        # Tanvir is MARA Certified — a PAID consultant — and has a single calendar
+        # with no separate Online variant, so her appointments all read as Onsite
+        # until an Online calendar exists for her.
+        "name": "Tanvir Kaur - MARA Certified",
+        "calendar_ids": ["9tFSkqULRGccND8lLRif"],
+        "is_paid": True,
+        "type": "Paid · MARA · Mel",
         "city": "Melbourne",
     },
 ]
@@ -233,8 +237,12 @@ def get_con() -> duckdb.DuckDBPyConnection:
     md = os.getenv("MOTHERDUCK_TOKEN")
     if md:
         dbname = os.getenv("MOTHERDUCK_DATABASE", "migration")
-        return duckdb.connect(f"md:{dbname}?motherduck_token={md}")
-    return duckdb.connect(str(DB_PATH), read_only=True)
+        c = duckdb.connect(f"md:{dbname}?motherduck_token={md}")
+        c.execute("SET TimeZone='UTC'")   # warehouse stores UTC; views shift +10h to AEST
+        return c
+    c = duckdb.connect(str(DB_PATH), read_only=True)
+    c.execute("SET TimeZone='UTC'")
+    return c
 
 
 # Transient MotherDuck server errors (timeouts / UNAVAILABLE / DEADLINE_EXCEEDED)
@@ -695,6 +703,8 @@ METRIC_DEFS = {
         "Conversions": "Contacts who reached a converting stage: COE (L2C-Education / CLT-Onshore: COE/Initial Received or Won) + POC (CLT-VISA: Application Submitted / Acknowledgment+Doc / Won). Click for All / POC / COE.",
         "Ad Spend": "Meta Ads spend over the period, converted USD→AUD at the shown FX rate.",
         "Leads to Booking": "Booked ÷ Leads — the share of leads that booked a consultation.",
+        "Bookings": "Booked ÷ Leads — the share of leads that booked a consultation.",
+        "CPL": "Cost per lead = Meta ad spend (USD→AUD) ÷ Meta (Paid Social) leads in the period — the same spend the Ad Spend card shows over the same Paid-Social cohort the Leads card counts.",
         "Show Rate": "Showed ÷ Booked — the share of booked consultations that were attended.",
         "Blended CPA": "Meta ad spend ÷ ALL appointments booked in the window (every source, not just Meta) — blended cost per appointment.",
         "Revenue": "Succeeded GHL payments received in the period (AUD); payers = distinct paying contacts.",
@@ -836,7 +846,8 @@ if ts:
         except ValueError:
             ts = None
 if ts:
-    age_min = int((datetime.now() - ts).total_seconds() / 60)
+    # last_refreshed is stored in UTC — compare against UTC, not machine-local time
+    age_min = int((datetime.utcnow() - ts).total_seconds() / 60)
     if age_min < 90:
         fresh_text = f"Updated {age_min} min ago" if age_min >= 1 else "Updated just now"
     else:
@@ -916,8 +927,9 @@ except Exception as _dberr:
 
 # Lazy tabs: a segmented control drives which ONE tab renders, so only the
 # selected tab runs its (expensive) MotherDuck queries — not all 8 every rerun.
-_TAB_NAMES = ["Executive", "Meta Ads", "Funnels", "Counsellors", "SEO & Traffic",
-              "Forecast & Goals", "Upload Reports", "Sales Team Perf.", "WBR",
+_TAB_NAMES = ["Executive", "Executive Summary", "Meta Ads", "Funnels",
+              "Counsellors", "SEO & Traffic", "Forecast & Goals",
+              "Upload Reports", "Sales Team Perf.", "WBR",
               "Weekly Report", "Breakdown"]
 _active_tab = st.segmented_control(
     "Tabs", _TAB_NAMES, default="Executive", key="active_tab",
@@ -934,7 +946,7 @@ if _active_tab == "Counsellors":
     #   - 6 clickable scorecards at top (Slots Available, Slots Booked, Showed,
     #     No Show, Paid Consults, Best Performer) with delta vs prior period.
     #   - Melbourne / Sydney city cards below, broken down by counsellor's
-    #     OFFICE city (Gurbir + Navneet = Melbourne; everyone else = Sydney).
+    #     OFFICE city (Gurbir + Tanvir = Melbourne; everyone else = Sydney).
     #   - Drill-down modal opens on scorecard click.
     #   - Paid + Free tables retain per-counsellor rows + Mel/Syd subtotals.
     #
@@ -1137,6 +1149,14 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
             v = by_cal[cid].get(col, 0)
             return int(v) if pd.notna(v) else 0
         appts     = sum(_cv(cid, "appointments") for cid in cals if cid in by_cal)
+        # Delivery mode comes from the CALENDAR name: a counsellor keeps a
+        # "... - Online" calendar alongside their in-office one. Online + Onsite
+        # always add back up to Appointments; a counsellor with no Online calendar
+        # reads as all-Onsite.
+        _online_cals = [cid for cid in cals
+                        if "online" in str(_cal_name_map.get(cid, "")).lower()]
+        online  = sum(_cv(cid, "appointments") for cid in _online_cals if cid in by_cal)
+        onsite  = appts - online
         confirmed = sum(_cv(cid, "confirmed")    for cid in cals if cid in by_cal)
         showed    = sum(_cv(cid, "showed")       for cid in cals if cid in by_cal)
         noshow    = sum(_cv(cid, "noshow")       for cid in cals if cid in by_cal)
@@ -1157,6 +1177,8 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
             "Type":            c.get("type", ""),
             "City":            c.get("city", "Sydney"),
             "Appointments":    appts,
+            "Online":          online,
+            "Onsite":          onsite,
             "Confirmed":       confirmed,
             "Showed":          showed,
             "No Show":         noshow,
@@ -1473,7 +1495,7 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
             "when the appointment is scheduled to happen. Lead Created Date = when "
             "the contact entered the CRM. **Source** uses the same classification "
             "as Executive_1; **Platform** is the granular social platform (social "
-            "sources only). Mel/Syd split = counsellor's office (Gurbir + Navneet = "
+            "sources only). Mel/Syd split = counsellor's office (Gurbir + Tanvir = "
             "Melbourne; others = Sydney) — independent of the global City filter."
         )
 
@@ -1909,12 +1931,8 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
         - 'X - MARA Certified'        -> 'MARA'
         - 'X - Career Counsellor'     -> 'Career Counsellor'
         - 'X - Education Consultant'  -> 'Education'
-        Override: Navneet Kaur is a Career Counsellor by name but is treated
-        as Education per Marketing Lead (she runs free education consults).
         """
         name = c.get("name", "")
-        if "Navneet Kaur" in name:
-            return "Education"
         if "MARA" in name:
             return "MARA"
         if "Career Counsellor" in name:
@@ -1949,6 +1967,8 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
             "Counsellor":      cname,
             "Type":            type_simple,
             "Appointments":    appts,
+            "Online":          r["Online"],
+            "Onsite":          r["Onsite"],
             "Confirmed":       confirm,
             "Showed":          showed,
             "No Show":         noshow,
@@ -1970,6 +1990,8 @@ section[data-testid="stMain"] [data-testid="stButton"] > button[kind="primary"]{
             "Counsellor":      "Grand Total",
             "Type":             "—",
             "Appointments":    sum(r["Appointments"]    for r in matrix_rows),
+            "Online":          sum(r["Online"]          for r in matrix_rows),
+            "Onsite":          sum(r["Onsite"]          for r in matrix_rows),
             "Confirmed":       sum(r["Confirmed"]       for r in matrix_rows),
             "Showed":          sum(r["Showed"]          for r in matrix_rows),
             "No Show":         sum(r["No Show"]         for r in matrix_rows),
@@ -2151,7 +2173,7 @@ The **Counsellors** tab tracks utilisation, outcomes, and paid revenue for each 
 | Column | Formula / Source | Notes |
 |---|---|---|
 | **Counsellor** | First-name from the locked `COUNSELLORS` list in app.py | One row per active counsellor |
-| **Type** | Parsed from the counsellor's name suffix, with override | `MARA` (Nasir, Gurbir), `Career Counsellor` (Turab), `Education` (Kajal, Wajahad, Saurab, **Navneet** — override per Marketing Lead: she runs free education consults despite the "Career Counsellor" title) |
+| **Type** | Parsed from the counsellor's name suffix | `MARA` (Nasir, Gurbir, Tanvir), `Career Counsellor` (Turab), `Education` (Kajal, Wajahad, Saurab) |
 | **Appointments** | `COUNT(*) FROM fact_appointments WHERE start_time IN window AND DAYOFWEEK NOT IN (0,6)` | Invalid status appointments are dropped **globally** at the SQL view layer — they don't appear in any count, scorecard, table, drill-down, or chart. Sat/Sun excluded too. |
 | **Confirmed** | `COUNT(*) FILTER (WHERE LOWER(appointment_status) = 'confirmed')` | Subset of Appointments |
 | **Showed** | `COUNT(*) FILTER (WHERE LOWER(appointment_status) = 'showed')` | Subset of Appointments |
@@ -2170,7 +2192,7 @@ The **Counsellors** tab tracks utilisation, outcomes, and paid revenue for each 
 | **Conv %** | `Convert ÷ Appointments` | Funnel end-to-end conversion |
 
 ### 🏙️ Mel/Syd attribution & City filter
-- **Melbourne** office: Gurbir Singh, Navneet Kaur
+- **Melbourne** office: Gurbir Singh, Tanvir Kaur
 - **Sydney** office: Turab, Nasir Nawaz, Kajal, Wajahad, Saurab
 - Everything on this tab — top scorecards, trend chart, drill-down table, and the Performance Matrix — filters by the **global City filter** at the top of the page (`All / Melbourne / Sydney`).
 - Mel/Syd here = counsellor **office**, not the contact's city (which is what the global filter cascades by on other tabs).
@@ -2673,7 +2695,7 @@ section[data-testid="stMain"] [data-testid="stButton"] > button > div > p{
         perf_pri = pd.DataFrame()
 
     # Bookings (new logic) = fresh-leads cohort (New Lead stage + filled a form
-    # in window) who booked a calendar, split by calendar city (Gurbir/Navneet
+    # in window) who booked a calendar, split by calendar city (Gurbir/Tanvir
     # calendars = Melbourne; every other calendar = Sydney).
     bk_city = run_df("vw_meta_bookings_by_city",
                      {"since": since.isoformat(), "until": until.isoformat()})
@@ -2886,7 +2908,7 @@ section[data-testid="stMain"] [data-testid="stButton"] > button > div > p{
 
         elif metric == "Bookings":
             # New logic: the fresh-leads cohort (New Lead stage + filled a form
-            # in window) who booked a calendar. City = calendar (Gurbir/Navneet
+            # in window) who booked a calendar. City = calendar (Gurbir/Tanvir
             # = Melbourne). The 'View by account' control above filters by city.
             bd = run_df("vw_meta_bookings_detail",
                         {"since": since.isoformat(), "until": until.isoformat()})
@@ -2913,7 +2935,7 @@ section[data-testid="stMain"] [data-testid="stButton"] > button > div > p{
                 st.caption(
                     f"{len(out)} booked lead(s)"
                     f"{'' if acct == 'All' else f' in {acct}'}. "
-                    "City = calendar (Gurbir/Navneet = Melbourne; all other calendars = Sydney). "
+                    "City = calendar (Gurbir/Tanvir = Melbourne; all other calendars = Sydney). "
                     "Pipeline/Stage/Status = the contact's latest opportunity."
                 )
 
@@ -4909,7 +4931,7 @@ The **SEO & Traffic** tab joins GA4, GSC, GHL forms, GHL surveys, GHL appointmen
 
 ### 🏙️ City filter (Mel/Syd attribution)
 - Derived from the contact's **latest appointment's calendar** → counsellor → counsellor's office city.
-  - **Melbourne**: Navneet Kaur, Gurbir Singh
+  - **Melbourne**: Tanvir Kaur, Gurbir Singh
   - **Sydney**: Turab, Nasir Nawaz, Kajal, Wajahad, Saurab
 - Contacts with no appointment → bucket `Unassigned` (shown only when the global filter is "All").
 - The **global City filter** at the top of the page (`All / Melbourne / Sydney`) drives the **entire tab**:
@@ -5332,11 +5354,22 @@ if _active_tab == "Upload Reports":
 # EXECUTIVE_1 TAB — Leads (created OR revived) by REFINED source,
 # clickable to the contact-level detail.
 # =====================================================================
-if _active_tab == "Executive":
-    st.markdown(
-        "<div class='panel-title'>Executive_1 — Leads by source"
-        "<span class='hint'>created or revived in the selected range</span></div>",
-        unsafe_allow_html=True)
+if _active_tab in ("Executive", "Executive Summary"):
+    # Executive Summary reuses this whole block — identical cohort, filters and
+    # drill-downs — and only differs in which scorecards it renders (and that it
+    # stops before the analytics section). One code path, so the two can never drift.
+    _exec_summary = (_active_tab == "Executive Summary")
+    _tab_key = "sum" if _exec_summary else "exec"
+    if _exec_summary:
+        st.markdown(
+            "<div class='panel-title'>Executive Summary — headline scorecards"
+            "<span class='hint'>same cohort &amp; rules as Executive_1</span></div>",
+            unsafe_allow_html=True)
+    else:
+        st.markdown(
+            "<div class='panel-title'>Executive_1 — Leads by source"
+            "<span class='hint'>created or revived in the selected range</span></div>",
+            unsafe_allow_html=True)
 
     e1 = run_df("vw_exec1_lead_detail", {"since": since.isoformat(), "until": until.isoformat()})
     if e1.empty:
@@ -5522,12 +5555,16 @@ if _active_tab == "Executive":
             return SRC_RENAME.get(s, "Others")
         e1["src_group"] = e1["refined_source"].map(_src_group)
         e1["paid_channel"] = e1["refined_source"].map(PAID_CHANNEL)
+        # tolerate a cached view result predating the appt_upcoming column
+        if "appt_upcoming" not in e1.columns:
+            e1["appt_upcoming"] = 0
         if not e1p.empty:
             e1p = e1p.copy()
             e1p["paid_channel"] = e1p["refined_source"].map(PAID_CHANNEL)
         src = (e1.groupby("src_group")
                .agg(Leads=("contact_id", "count"), Opportunities=("n_opps", "sum"),
-                    Booked=("appt_booked", "sum"), Showed=("appt_showed", "sum"))
+                    Booked=("appt_booked", "sum"), Showed=("appt_showed", "sum"),
+                    Upcoming=("appt_upcoming", "sum"))
                .reset_index().rename(columns={"src_group": "Source"}))
         if not conv_df.empty:
             _grp = conv_df["source"].map(lambda s: SRC_RENAME.get(s, "Others"))
@@ -5536,7 +5573,7 @@ if _active_tab == "Executive":
         else:
             src["Conversions"] = 0
         src["Conversions"] = src["Conversions"].fillna(0).astype(int)
-        for _c in ["Leads", "Opportunities", "Booked", "Showed"]:
+        for _c in ["Leads", "Opportunities", "Booked", "Showed", "Upcoming"]:
             src[_c] = src[_c].astype(int)
         src["Booking Rate"] = (src["Booked"] / src["Leads"]).replace([float("inf")], 0).fillna(0)
         src["Show Rate"] = (src["Showed"] / src["Booked"]).replace([float("inf")], 0).fillna(0)
@@ -5579,7 +5616,8 @@ if _active_tab == "Executive":
         def _leads_emails(df):
             dd = df.copy()
             appt = dd.apply(lambda r: "Showed" if r["appt_showed"] == 1
-                            else ("Booked" if r["appt_booked"] == 1 else "—"), axis=1)
+                            else ("Upcoming" if r.get("appt_upcoming", 0) == 1
+                                  else ("Booked" if r["appt_booked"] == 1 else "—")), axis=1)
             cal = dd.apply(lambda r: r["calendar_name"]
                            if (r["appt_booked"] == 1 and pd.notna(r["calendar_name"])) else "—", axis=1)
             # Online vs Onsite from the booked calendar name ("—" when not booked).
@@ -5608,6 +5646,9 @@ if _active_tab == "Executive":
                 "Platform": dd.apply(_plat, axis=1).values,
                 "Lead Created Date": pd.to_datetime(_lcd).dt.strftime("%Y-%m-%d").values,
                 "Appt Created Date": dd["appt_booked_date"].map(
+                    lambda v: pd.to_datetime(v).strftime("%Y-%m-%d") if pd.notna(v) else "—").values,
+                "Appt Date": (dd["appt_start_date"] if "appt_start_date" in dd.columns
+                              else pd.Series(pd.NaT, index=dd.index)).map(
                     lambda v: pd.to_datetime(v).strftime("%Y-%m-%d") if pd.notna(v) else "—").values,
                 "Appointment Status": appt.values,
                 "Calendar Name": cal.values,
@@ -5756,13 +5797,17 @@ if _active_tab == "Executive":
 
         ICON = {"Leads": "👥", "Queries": "🔍", "Bookings": "📅", "Booked": "📅",
                 "Showed": "✅", "Conversions": "🎯", "Ad Spend": "💰",
-                "Show Rate": "📊", "Revenue": "💵", "Blended CPA": "🧮"}
+                "Show Rate": "📊", "Revenue": "💵", "Blended CPA": "🧮",
+                "CPL": "🏷️"}
 
         # ---- Drill-down modal: opens when a scorecard is clicked (Executive style) ----
         @st.dialog(" ", width="large")
         def _e1_modal():
             card = st.session_state.get("e1_card", "Leads")
-            st.markdown(f"### {ICON.get(card, '')} {card} — Drill Down")
+            # Executive Summary labels some cards differently to the drill-down key
+            # they dispatch on, so the heading follows the label that was clicked.
+            _clabel = st.session_state.get("e1_card_label") or card
+            st.markdown(f"### {ICON.get(card, '')} {_clabel} — Drill Down")
 
             if card == "Leads":
                 st.caption(f"Lead→Booking **{ltb*100:.0f}%** · Booking→Show **{sr*100:.0f}%**")
@@ -5793,6 +5838,9 @@ if _active_tab == "Executive":
                     "Leads": _sx["Leads"].astype(int).values,
                     "Booked": _bk_txt,
                     "Showed": _sh_txt,
+                    # Upcoming = the slice of Booked whose appointment is still ahead
+                    # of us, so a soft Show Rate reads as "not yet due", not "no-show".
+                    "Upcoming": _sx["Upcoming"].astype(int).values,
                     "% of Leads": ((_sx["Leads"] / _tot * 100) if _tot else _sx["Leads"] * 0)
                                   .map(lambda v: f"{v:.0f}%").values,
                 })
@@ -5840,12 +5888,15 @@ if _active_tab == "Executive":
                         .properties(height=300).configure_view(strokeWidth=0))
                     st.altair_chart(_cbar, use_container_width=True)
                     st.caption("**Lost Leads** = leads from this range whose opportunity status is "
-                               "*Lost*. Booked / Showed = appointments booked / attended.")
+                               "*Lost*. Booked / Showed = appointments booked / attended. "
+                               "**Upcoming** = the part of Booked whose appointment is still in "
+                               "the future (not yet due) — already counted in Booked.")
 
                 def _nested(base_df, group_col, label, key, prior_df=None):
                     nb = (base_df.groupby(group_col)
                           .agg(Leads=("contact_id", "count"), Opportunities=("n_opps", "sum"),
-                               Booked=("appt_booked", "sum"), Showed=("appt_showed", "sum"))
+                               Booked=("appt_booked", "sum"), Showed=("appt_showed", "sum"),
+                               Upcoming=("appt_upcoming", "sum"))
                           .reset_index().sort_values("Leads", ascending=False))
                     # prior-period per-group booking/show rates → ▲/▼ vs last period
                     pbr, psr = {}, {}
@@ -5871,6 +5922,7 @@ if _active_tab == "Executive":
                         "Opportunities": nb["Opportunities"].astype(int).values,
                         "Booked": _bt,
                         "Showed": _stt,
+                        "Upcoming": nb["Upcoming"].astype(int).values,
                     })
                     _cm = pd.DataFrame("", index=nd.index, columns=nd.columns)
                     _cm["Booked"] = [f"color:{c}; font-weight:600" for c in _bc]
@@ -5975,7 +6027,8 @@ if _active_tab == "Executive":
             elif card == "Bookings":
                 st.caption(f"Lead→Booking rate **{ltb*100:.0f}%** ({cur_booked:,} of {n_leads:,} leads)")
                 st.markdown("**Table 1 — by source** (tick rows to filter the contacts below)")
-                _chosen = _src_table_select(["Leads", "Booked", "Booking Rate"], "e1_bk_srctbl")
+                _chosen = _src_table_select(["Leads", "Booked", "Upcoming", "Booking Rate"],
+                                            "e1_bk_srctbl")
                 _src_bar(["Leads", "Booked"], ["#4DA6FF", "#2EAD8F"], "Leads vs Booked — by source")
                 _emails_by_sources(leads_df[leads_df["appt_booked"] == 1], _chosen,
                                    "bookings", "Booked contacts")
@@ -5983,7 +6036,8 @@ if _active_tab == "Executive":
             elif card == "Show Rate":
                 st.caption(f"Booking→Show rate **{sr*100:.0f}%** ({cur_showed:,} of {cur_booked:,} booked)")
                 st.markdown("**Table 1 — by source** (tick rows to filter the contacts below)")
-                _chosen = _src_table_select(["Booked", "Showed", "Show Rate"], "e1_sr_srctbl")
+                _chosen = _src_table_select(["Booked", "Showed", "Upcoming", "Show Rate"],
+                                            "e1_sr_srctbl")
                 _src_bar(["Booked", "Showed"], ["#2EAD8F", "#7A52CC"], "Booked vs Showed — by source")
                 _emails_by_sources(leads_df[leads_df["appt_showed"] == 1], _chosen,
                                    "showrate", "Showed contacts")
@@ -6037,6 +6091,67 @@ if _active_tab == "Executive":
                     st.dataframe(cv, hide_index=True, use_container_width=True, height=440)
                     _dl(cv, "Download (CSV)", "conversions")
 
+            elif card == "CPL":
+                if not n_meta_leads:
+                    st.caption("No Meta (Paid Social) leads in this window — CPL is undefined.")
+                else:
+                    st.caption(
+                        f"**${cpl:,.0f}** per Meta lead — ${spend_aud:,.0f} spend ÷ "
+                        f"{n_meta_leads:,} Paid-Social leads (USD→AUD @ {fx:.2f}). "
+                        f"Blended across all {n_leads:,} leads: **${cpl_blended:,.0f}**.")
+                ad = run_df("vw_exec1_adspend_detail",
+                            {"since": since.isoformat(), "until": until.isoformat()})
+                if ad.empty:
+                    st.caption("No Meta spend in this window.")
+                else:
+                    _cd = ad.copy()
+                    _cd["spend_aud"] = _cd["spend"] * fx
+                    _cd["cpl"] = _cd["spend_aud"] / _cd["leads"].replace(0, float("nan"))
+                    _cd = _cd.sort_values("spend_aud", ascending=False)
+                    ct = pd.DataFrame({
+                        "Account": _cd["account_label"].values,
+                        "Campaign": _cd["campaign_name"].astype(str).str.slice(0, 48).values,
+                        "Spend (AUD)": _cd["spend_aud"].map(lambda v: f"${v:,.0f}").values,
+                        "Meta Leads": _cd["leads"].fillna(0).astype(int).values,
+                        "CPL (AUD)": _cd["cpl"].map(
+                            lambda v: f"${v:,.0f}" if pd.notna(v) else "—").values,
+                    })
+                    st.markdown("**Table 1 — CPL by campaign** (highest spend first)")
+                    st.dataframe(ct, hide_index=True, use_container_width=True, height=300)
+                    st.caption(
+                        "Per-campaign CPL uses **Meta's own reported lead count** — the only "
+                        "lead figure available per campaign — so these rows won't add up to "
+                        "the headline CPL above, which divides by the **GHL Paid-Social** "
+                        "cohort (Table 2). Use the rows to compare campaigns, the headline "
+                        "to reconcile with the Leads card.")
+
+                    # CPL by campaign, cheapest first — campaigns with no leads are
+                    # dropped (CPL undefined, not zero).
+                    import altair as _altc
+                    _cb = _cd[_cd["leads"].fillna(0) > 0].copy()
+                    if not _cb.empty:
+                        _cb["Campaign"] = _cb["campaign_name"].astype(str).str.slice(0, 28)
+                        _ordc = _cb.sort_values("cpl")["Campaign"].tolist()
+                        st.markdown("**CPL by campaign**")
+                        _chc = (_altc.Chart(_cb).mark_bar(cornerRadius=2, color="#4DA6FF").encode(
+                            x=_altc.X("Campaign:N", sort=_ordc, title=None,
+                                      axis=_altc.Axis(labelAngle=-35, labelFontSize=11)),
+                            y=_altc.Y("cpl:Q", title="CPL (AUD)"),
+                            tooltip=[_altc.Tooltip("Campaign:N"),
+                                     _altc.Tooltip("spend_aud:Q", title="Spend (AUD)", format=",.0f"),
+                                     _altc.Tooltip("leads:Q", title="Meta Leads"),
+                                     _altc.Tooltip("cpl:Q", title="CPL (AUD)", format=",.0f")])
+                            .properties(height=290).configure_view(strokeWidth=0))
+                        st.altair_chart(_chc, use_container_width=True)
+                    _dl(ct, "Download (CSV)", "cpl_campaigns")
+
+                # Table 2 — the contacts behind the headline denominator.
+                _pl = leads_df[leads_df["refined_source"] == "Paid Social"]
+                st.markdown(f"**Table 2 — Meta (Paid Social) leads · {len(_pl):,} contacts**")
+                _ptbl = _leads_emails(_pl).sort_values("Lead Created Date", ascending=False)
+                st.dataframe(_ptbl, hide_index=True, use_container_width=True, height=420)
+                _dl(_ptbl, "Download (CSV)", "cpl_leads")
+
             elif card == "Ad Spend":
                 st.caption(f"Meta ad spend, USD→AUD @ {fx:.2f}. Total **${spend_aud:,.0f}**.")
                 ad = run_df("vw_exec1_adspend_detail", {"since": since.isoformat(), "until": until.isoformat()})
@@ -6087,13 +6202,19 @@ if _active_tab == "Executive":
                     _dl(rt, "Download (CSV)", "revenue")
 
         # ---- Scorecards: click a card to open its drill-down modal ----
-        def _e1_scorecard(col, name, value, *extra):
+        def _e1_scorecard(col, name, value, *extra, card=None):
+            """`name` is the label printed on the card; `card` is the drill-down key
+            the modal dispatches on (defaults to `name`). Executive Summary renames
+            its cards ("Lead → Booking Rate") while reusing the Executive
+            drill-downs ("Bookings"), so both tabs stay on one code path."""
+            ckey = card or name
             lines = [name.upper(), value] + [x for x in extra if x]
             with col:
-                if st.button("\n\n".join(lines), key=f"e1sc_{name}",
+                if st.button("\n\n".join(lines), key=f"e1sc_{_tab_key}_{name}",
                              use_container_width=True,
-                             help=METRIC_DEFS["exec"].get(name)):
-                    st.session_state["e1_card"] = name
+                             help=METRIC_DEFS["exec"].get(ckey)):
+                    st.session_state["e1_card"] = ckey
+                    st.session_state["e1_card_label"] = name
                     _e1_modal()
 
         # Split Leads by acquisition channel: Paid Social (Meta) vs Organic
@@ -6108,13 +6229,25 @@ if _active_tab == "Executive":
         if n_gads_leads:
             sub += f"{n_gads_leads:,} Google Ads · "
         sub += f"{n_organic_leads:,} Organic / other"
-        kc = st.columns(3)
-        _e1_scorecard(kc[0], "Leads", f"{n_leads:,}", sub,
-                      _delta_md(n_leads, p_leads, higher_is_better=True, fmt="pct"))
-        _e1_scorecard(kc[1], "Queries", f"{n_queries:,}", f"no pipeline · {q_booked:,} booked",
-                      _delta_md(n_queries, p_queries, higher_is_better=True, fmt="pct"))
-        _e1_scorecard(kc[2], "Conversions", f"{n_conv:,}", "COE + POC · click for All/POC/COE",
-                      _delta_md(n_conv, p_conv, higher_is_better=True, fmt="pct"))
+
+        # ---- CPL — Meta ad spend ÷ Meta (Paid Social) leads ----------------------
+        # Numerator is the SAME spend the Ad Spend card shows; denominator is the
+        # SAME Paid-Social cohort the Leads card counts — so CPL reconciles with
+        # both cards instead of being a third, independent number. `cpl_blended`
+        # (spend ÷ ALL leads) rides along in the card subtitle.
+        # Prior-period Meta leads get the same campaign→account rule the current
+        # period applies above (_ps_ok), computed locally so no existing Executive
+        # figure changes.
+        if e1p.empty:
+            p_meta_leads = 0
+        else:
+            _pm = e1p[(e1p["refined_source"] == "Paid Social")
+                      & (e1p["email"].fillna("").astype(str).str.strip() != "")]
+            p_meta_leads = int(_pm["campaign"].map(
+                lambda c: _exmap.get(_exck(c)) in ("Melbourne", "Sydney")).sum())
+        cpl = (spend_aud / n_meta_leads) if n_meta_leads else None
+        p_cpl = (p_spend_aud / p_meta_leads) if p_meta_leads else None
+        cpl_blended = (spend_aud / n_leads) if n_leads else None
 
         # Blended cost per appointment = Meta ad spend ÷ ALL appointments booked
         # in the window (across every source — "blended").
@@ -6123,276 +6256,313 @@ if _active_tab == "Executive":
         blended_cpa = (spend_aud / total_appts) if total_appts else None
         p_blended_cpa = (p_spend_aud / p_total_appts) if p_total_appts else None
 
-        kc2 = st.columns(4)
-        _e1_scorecard(kc2[0], "Ad Spend", f"${spend_aud:,.0f}", f"Meta · AUD @ {fx:.2f}",
-                      _delta_md(spend_aud, p_spend_aud, higher_is_better=True, fmt="pct"))
-        _e1_scorecard(kc2[1], "Bookings", f"{ltb*100:.0f}%", f"{cur_booked:,} of {n_leads:,} leads",
-                      _delta_md(ltb, p_ltb, higher_is_better=True, fmt="pts"))
-        _e1_scorecard(kc2[2], "Show Rate", f"{sr*100:.0f}%", f"{cur_showed:,} of {cur_booked:,} booked",
-                      _delta_md(sr, p_sr, higher_is_better=True, fmt="pts"))
-        _e1_scorecard(kc2[3], "Revenue", f"${rev_aud:,.0f}", f"GHL payments · {len(rev_cur):,} payers",
-                      _delta_md(rev_aud, p_rev_aud, higher_is_better=True, fmt="pct"))
-
-        st.caption(
-            "Click any **scorecard** to open its drill-down. **Leads** = created or revived (+ booked-in), "
-            "**Queries excluded**. Rates: Lead→Booking = Booked ÷ Leads; Show = Showed ÷ Booked. "
-            "**Ad Spend** is Meta (USD→AUD); **Revenue** is succeeded GHL payments in the window.")
-
-        # =============================================================
-        # ANALYTICS — source trend · counsellor pie · insights · goals · funnel
-        # =============================================================
-        import altair as _alt
-        import re as _re
-
-        # Brand palette — 3 primary hues (blue / purple / coral-red) plus light
-        # & dark variants so charts with >3 categories stay on-brand. Solid
-        # lines, low-opacity fills, muted-gray axis labels (see brand spec).
-        BLUE, PURPLE, RED = "#4DA6FF", "#7A52CC", "#FF4D66"
-        PAL = [BLUE, PURPLE, RED, "#8AC6FF", "#A98EDB", "#FF8A99",
-               "#2E7FD6", "#5A3DA6", "#D63A52"]
-        AXIS_GRAY, INK = "#718096", "#1A1A1A"
-        _xaxis = _alt.Axis(format="%b %d", tickCount=8, grid=False, domain=False,
-                           ticks=False, labelFontSize=11, labelColor=AXIS_GRAY)
-        _yaxis = _alt.Axis(grid=True, gridColor="#F0F2F5", domain=False, ticks=False,
-                           labelColor=AXIS_GRAY)
-
-        # ---- 1) Leads-by-source over time (one line per source) — Queries excluded ----
-        st.markdown("---")
-        st.markdown("### 📈 Leads by source — over time")
-        # Keep only the top 6 sources by total leads in the window; roll the
-        # long tail into a single "Others" line so the chart stays readable.
-        _base = leads_df.assign(d=pd.to_datetime(leads_df["lead_date"]))
-        _top6 = list(_base["refined_source"].value_counts().head(6).index)
-        _base["refined_source"] = _base["refined_source"].where(
-            _base["refined_source"].isin(_top6), "Others")
-        _ts = (_base.groupby([pd.Grouper(key="d", freq="D"), "refined_source"])
-                 .size().reset_index(name="Leads"))
-        if _ts.empty:
-            st.caption("No leads to chart in this window.")
+        if _exec_summary:
+            _csub = f"Meta · {n_meta_leads:,} paid leads"
+            if cpl_blended:
+                _csub += f" · blended ${cpl_blended:,.0f}"
+            kcs = st.columns(4)
+            _e1_scorecard(kcs[0], "Leads", f"{n_leads:,}", sub,
+                          _delta_md(n_leads, p_leads, higher_is_better=True, fmt="pct"))
+            # Lower CPL is better — higher_is_better=False, so a fall reads green.
+            _e1_scorecard(kcs[1], "CPL", (f"${cpl:,.0f}" if cpl else "—"), _csub,
+                          _delta_md(cpl, p_cpl, higher_is_better=False, fmt="pct"),
+                          card="CPL")
+            _e1_scorecard(kcs[2], "Lead → Booking Rate", f"{ltb*100:.0f}%",
+                          f"{cur_booked:,} of {n_leads:,} leads",
+                          _delta_md(ltb, p_ltb, higher_is_better=True, fmt="pts"),
+                          card="Bookings")
+            _e1_scorecard(kcs[3], "Booking → Show Rate", f"{sr*100:.0f}%",
+                          f"{cur_showed:,} of {cur_booked:,} booked",
+                          _delta_md(sr, p_sr, higher_is_better=True, fmt="pts"),
+                          card="Show Rate")
+            st.caption(
+                "Click any **scorecard** to open its drill-down. Same cohort and rules as "
+                "**Executive_1**: **Leads** = created or revived (+ booked-in), Queries and "
+                "no-email contacts excluded. **CPL** = Meta spend (USD→AUD) ÷ Meta "
+                "(Paid Social) leads. **Lead→Booking** = Booked ÷ Leads; "
+                "**Booking→Show** = Showed ÷ Booked.")
         else:
-            # One line per source so each source's value reads directly off the
-            # y-axis (a stacked area hid this — a band's height was its position in
-            # the stack, not its lead count). Legend-click isolates a source.
-            _hover = _alt.selection_point(fields=["refined_source"], bind="legend")
-            line = (_alt.Chart(_ts).mark_line(interpolate="monotone", strokeWidth=2.5,
-                                              point=True)
-                    .encode(
-                        x=_alt.X("d:T", title=None, axis=_xaxis),
-                        y=_alt.Y("Leads:Q", title=None, axis=_yaxis,
-                                 scale=_alt.Scale(zero=True)),
-                        color=_alt.Color("refined_source:N", title="Source",
-                                         scale=_alt.Scale(range=PAL)),
-                        opacity=_alt.condition(_hover, _alt.value(1.0), _alt.value(0.15)))
-                    .add_params(_hover))
+            kc = st.columns(3)
+            _e1_scorecard(kc[0], "Leads", f"{n_leads:,}", sub,
+                          _delta_md(n_leads, p_leads, higher_is_better=True, fmt="pct"))
+            _e1_scorecard(kc[1], "Queries", f"{n_queries:,}", f"no pipeline · {q_booked:,} booked",
+                          _delta_md(n_queries, p_queries, higher_is_better=True, fmt="pct"))
+            _e1_scorecard(kc[2], "Conversions", f"{n_conv:,}", "COE + POC · click for All/POC/COE",
+                          _delta_md(n_conv, p_conv, higher_is_better=True, fmt="pct"))
 
-            # Shared vertical rule → one hover card listing EVERY source's leads
-            # for that date (GA4-style), so you don't hover each point one by one.
-            # Wide pivot feeds the combined tooltip; sources ordered by total
-            # leads (desc) so the biggest reads first.
-            _wide = (_ts.pivot_table(index="d", columns="refined_source",
-                                     values="Leads", fill_value=0).reset_index())
-            _order = [s for s in (_ts.groupby("refined_source")["Leads"].sum()
-                                  .sort_values(ascending=False).index.tolist())
-                      if s in _wide.columns]
-            _nearest = _alt.selection_point(nearest=True, on="mouseover",
-                                            fields=["d"], empty=False)
-            rule = (_alt.Chart(_wide).mark_rule(color="#9AA5B1", strokeWidth=1)
-                    .encode(
-                        x=_alt.X("d:T", title=None, axis=_xaxis),
-                        opacity=_alt.condition(_nearest, _alt.value(0.45), _alt.value(0)),
-                        tooltip=[_alt.Tooltip("d:T", title="Date", format="%b %d")]
-                                + [_alt.Tooltip(field=s, type="quantitative", title=s)
-                                   for s in _order])
-                    .add_params(_nearest))
+            kc2 = st.columns(4)
+            _e1_scorecard(kc2[0], "Ad Spend", f"${spend_aud:,.0f}", f"Meta · AUD @ {fx:.2f}",
+                          _delta_md(spend_aud, p_spend_aud, higher_is_better=True, fmt="pct"))
+            _e1_scorecard(kc2[1], "Bookings", f"{ltb*100:.0f}%", f"{cur_booked:,} of {n_leads:,} leads",
+                          _delta_md(ltb, p_ltb, higher_is_better=True, fmt="pts"))
+            _e1_scorecard(kc2[2], "Show Rate", f"{sr*100:.0f}%", f"{cur_showed:,} of {cur_booked:,} booked",
+                          _delta_md(sr, p_sr, higher_is_better=True, fmt="pts"))
+            _e1_scorecard(kc2[3], "Revenue", f"${rev_aud:,.0f}", f"GHL payments · {len(rev_cur):,} payers",
+                          _delta_md(rev_aud, p_rev_aud, higher_is_better=True, fmt="pct"))
 
-            chart = ((line + rule).properties(height=320)
-                     .configure_view(strokeWidth=0))
-            st.altair_chart(chart, use_container_width=True)
-            st.caption("Each line = that source's leads per day (read straight off the "
-                       "y-axis). Top 6 sources shown; the rest are rolled into "
-                       "“Others”. Hover any date to see all sources at once; click a "
-                       "legend item to isolate one. Queries excluded — they have their "
-                       "own scorecard.")
+            st.caption(
+                "Click any **scorecard** to open its drill-down. **Leads** = created or revived (+ booked-in), "
+                "**Queries excluded**. Rates: Lead→Booking = Booked ÷ Leads; Show = Showed ÷ Booked. "
+                "**Ad Spend** is Meta (USD→AUD); **Revenue** is succeeded GHL payments in the window.")
 
-        # NOTE: the counsellor booking-share pie was removed from the Executive tab
-        # (it's operational detail that lives, in depth, on the Counsellors tab). We
-        # still compute _gc quietly so the show-rate Auto-Insight below can name the
-        # counsellor with the largest show-rate gap.
-        _cn = run_df("vw_counsellors",
-                     {"since": since.isoformat(), "until": until.isoformat(), "city": city})
-        _gc = pd.DataFrame()
-        if not _cn.empty and {"calendar_id", "appointments", "showed"}.issubset(_cn.columns):
-            _c2name = {cid: c["name"].split(" - ")[0]
-                       for c in COUNSELLORS for cid in c["calendar_ids"]}
-            _cn["Counsellor"] = _cn["calendar_id"].map(_c2name).fillna("Other")
-            _gc = (_cn.groupby("Counsellor")
-                   .agg(Booked=("appointments", "sum"), Showed=("showed", "sum"))
-                   .reset_index())
-            _gc["ShowRate"] = (_gc["Showed"] / _gc["Booked"]).replace([float("inf")], 0).fillna(0)
-            _gc["BookRate"] = (_gc["Booked"] / n_leads) if n_leads else 0.0
-            _gc = _gc.sort_values("Booked", ascending=False)
+        # The Executive Summary tab is scorecards-only — the analytics
+        # section below (trend · insights · goals · funnel) stays on Executive_1.
+        if not _exec_summary:
+            # =============================================================
+            # ANALYTICS — source trend · counsellor pie · insights · goals · funnel
+            # =============================================================
+            import altair as _alt
+            import re as _re
 
-        # ---- 3) Auto-Insights (rule-based) ----
-        st.markdown("### 💡 Auto-Insights")
-        n_total = n_leads + n_queries
-        conv_rate = (n_conv / n_leads) if n_leads else 0.0
-        insights = []   # (level, text) — level in {warn, info, good}
+            # Brand palette — 3 primary hues (blue / purple / coral-red) plus light
+            # & dark variants so charts with >3 categories stay on-brand. Solid
+            # lines, low-opacity fills, muted-gray axis labels (see brand spec).
+            BLUE, PURPLE, RED = "#4DA6FF", "#7A52CC", "#FF4D66"
+            PAL = [BLUE, PURPLE, RED, "#8AC6FF", "#A98EDB", "#FF8A99",
+                   "#2E7FD6", "#5A3DA6", "#D63A52"]
+            AXIS_GRAY, INK = "#718096", "#1A1A1A"
+            _xaxis = _alt.Axis(format="%b %d", tickCount=8, grid=False, domain=False,
+                               ticks=False, labelFontSize=11, labelColor=AXIS_GRAY)
+            _yaxis = _alt.Axis(grid=True, gridColor="#F0F2F5", domain=False, ticks=False,
+                               labelColor=AXIS_GRAY)
 
-        if p_ltb:
-            diff = (ltb - p_ltb) * 100
-            lead_chg = ((n_leads - p_leads) / p_leads * 100) if p_leads else 0
-            if diff <= -2:
-                if abs(lead_chg) < 10:
-                    why = (f"Lead volume is roughly flat ({n_leads:,} vs {p_leads:,} last period), so the "
-                           "drop points to **lead quality / speed-to-lead / follow-up** rather than volume.")
-                elif lead_chg < 0:
-                    why = (f"Leads fell **{abs(lead_chg):.0f}%** ({p_leads:,} → {n_leads:,}) — fewer leads is "
-                           "the main driver; the rate itself held up better than the count.")
-                else:
-                    why = (f"Leads rose **{lead_chg:.0f}%** but bookings didn't keep pace — likely a "
-                           "**capacity / response-time** bottleneck, not lead supply.")
-                insights.append(("warn", f"**Booking rate down {abs(diff):.0f} pts** to {ltb*100:.0f}%. {why}"))
-            elif diff >= 2:
-                insights.append(("good", f"**Booking rate up {diff:.0f} pts** to {ltb*100:.0f}% vs last "
-                                         f"period (leads {p_leads:,} → {n_leads:,}). Keep the current mix."))
+            # ---- 1) Leads-by-source over time (one line per source) — Queries excluded ----
+            st.markdown("---")
+            st.markdown("### 📈 Leads by source — over time")
+            # Keep only the top 6 sources by total leads in the window; roll the
+            # long tail into a single "Others" line so the chart stays readable.
+            _base = leads_df.assign(d=pd.to_datetime(leads_df["lead_date"]))
+            _top6 = list(_base["refined_source"].value_counts().head(6).index)
+            _base["refined_source"] = _base["refined_source"].where(
+                _base["refined_source"].isin(_top6), "Others")
+            _ts = (_base.groupby([pd.Grouper(key="d", freq="D"), "refined_source"])
+                     .size().reset_index(name="Leads"))
+            if _ts.empty:
+                st.caption("No leads to chart in this window.")
             else:
-                insights.append(("info", f"**Booking rate steady** at {ltb*100:.0f}% "
-                                         f"(last period {p_ltb*100:.0f}%)."))
+                # One line per source so each source's value reads directly off the
+                # y-axis (a stacked area hid this — a band's height was its position in
+                # the stack, not its lead count). Legend-click isolates a source.
+                _hover = _alt.selection_point(fields=["refined_source"], bind="legend")
+                line = (_alt.Chart(_ts).mark_line(interpolate="monotone", strokeWidth=2.5,
+                                                  point=True)
+                        .encode(
+                            x=_alt.X("d:T", title=None, axis=_xaxis),
+                            y=_alt.Y("Leads:Q", title=None, axis=_yaxis,
+                                     scale=_alt.Scale(zero=True)),
+                            color=_alt.Color("refined_source:N", title="Source",
+                                             scale=_alt.Scale(range=PAL)),
+                            opacity=_alt.condition(_hover, _alt.value(1.0), _alt.value(0.15)))
+                        .add_params(_hover))
 
-        if p_sr:
-            sdiff = (sr - p_sr) * 100
-            worst = ""
-            if not _gc.empty:
-                _w = _gc[_gc["Booked"] >= 3].sort_values("ShowRate")
-                if len(_w):
-                    ww = _w.iloc[0]
-                    worst = (f" Largest gap on **{ww['Counsellor']}**'s calendar "
-                             f"({ww['ShowRate']*100:.0f}%). Suggest reminder-SMS automation.")
-            if sdiff <= -2:
-                insights.append(("warn", f"**Show rate down {abs(sdiff):.0f} pts** to {sr*100:.0f}%.{worst}"))
-            elif sdiff >= 2:
-                insights.append(("good", f"**Show rate up {sdiff:.0f} pts** to {sr*100:.0f}%.{worst}"))
+                # Shared vertical rule → one hover card listing EVERY source's leads
+                # for that date (GA4-style), so you don't hover each point one by one.
+                # Wide pivot feeds the combined tooltip; sources ordered by total
+                # leads (desc) so the biggest reads first.
+                _wide = (_ts.pivot_table(index="d", columns="refined_source",
+                                         values="Leads", fill_value=0).reset_index())
+                _order = [s for s in (_ts.groupby("refined_source")["Leads"].sum()
+                                      .sort_values(ascending=False).index.tolist())
+                          if s in _wide.columns]
+                _nearest = _alt.selection_point(nearest=True, on="mouseover",
+                                                fields=["d"], empty=False)
+                rule = (_alt.Chart(_wide).mark_rule(color="#9AA5B1", strokeWidth=1)
+                        .encode(
+                            x=_alt.X("d:T", title=None, axis=_xaxis),
+                            opacity=_alt.condition(_nearest, _alt.value(0.45), _alt.value(0)),
+                            tooltip=[_alt.Tooltip("d:T", title="Date", format="%b %d")]
+                                    + [_alt.Tooltip(field=s, type="quantitative", title=s)
+                                       for s in _order])
+                        .add_params(_nearest))
 
-        if not src.empty and n_total:
-            _top = src.iloc[0]
-            insights.append(("info", f"**{_top['Source']}** drove {_top['% of Leads']*100:.0f}% of leads "
-                                     f"({int(_top['Leads'])} of {int(src['Leads'].sum())}) this period — "
-                                     "the largest channel."))
+                chart = ((line + rule).properties(height=320)
+                         .configure_view(strokeWidth=0))
+                st.altair_chart(chart, use_container_width=True)
+                st.caption("Each line = that source's leads per day (read straight off the "
+                           "y-axis). Top 6 sources shown; the rest are rolled into "
+                           "“Others”. Hover any date to see all sources at once; click a "
+                           "legend item to isolate one. Queries excluded — they have their "
+                           "own scorecard.")
 
-        _ad = run_df("vw_exec1_adspend_detail",
-                     {"since": since.isoformat(), "until": until.isoformat()})
-        if not _ad.empty and _ad["leads"].fillna(0).sum() > 0:
-            _a = _ad.copy()
-            _a["cpa"] = (_a["spend"] * fx) / _a["leads"].replace(0, float("nan"))
-            best = _a.sort_values("leads", ascending=False).iloc[0]
-            cpa_cmp = ""
-            if blended_cpa and pd.notna(best["cpa"]):
-                cheaper = best["cpa"] < blended_cpa
-                cpa_cmp = (f" Its ${best['cpa']:,.0f}/lead is **{'below' if cheaper else 'above'}** the "
-                           f"blended ${blended_cpa:,.0f}/appointment — {'scale it' if cheaper else 'watch efficiency'}.")
-            insights.append(("info", f"Top ad by volume: **{str(best['campaign_name'])[:44]}** — "
-                                     f"{int(best['leads'])} Meta leads on ${best['spend']*fx:,.0f} spend.{cpa_cmp}"))
+            # NOTE: the counsellor booking-share pie was removed from the Executive tab
+            # (it's operational detail that lives, in depth, on the Counsellors tab). We
+            # still compute _gc quietly so the show-rate Auto-Insight below can name the
+            # counsellor with the largest show-rate gap.
+            _cn = run_df("vw_counsellors",
+                         {"since": since.isoformat(), "until": until.isoformat(), "city": city})
+            _gc = pd.DataFrame()
+            if not _cn.empty and {"calendar_id", "appointments", "showed"}.issubset(_cn.columns):
+                _c2name = {cid: c["name"].split(" - ")[0]
+                           for c in COUNSELLORS for cid in c["calendar_ids"]}
+                _cn["Counsellor"] = _cn["calendar_id"].map(_c2name).fillna("Other")
+                _gc = (_cn.groupby("Counsellor")
+                       .agg(Booked=("appointments", "sum"), Showed=("showed", "sum"))
+                       .reset_index())
+                _gc["ShowRate"] = (_gc["Showed"] / _gc["Booked"]).replace([float("inf")], 0).fillna(0)
+                _gc["BookRate"] = (_gc["Booked"] / n_leads) if n_leads else 0.0
+                _gc = _gc.sort_values("Booked", ascending=False)
 
-        if n_total:
-            qshare = n_queries / n_total
-            if qshare > 0.35:
-                insights.append(("warn", f"**{qshare*100:.0f}% of contacts are Queries** ({n_queries:,} of "
-                                         f"{n_total:,}) — a large untracked top-of-funnel (DMs with no form / "
-                                         "no contact info). Tighten lead capture to convert these."))
+            # ---- 3) Auto-Insights (rule-based) ----
+            st.markdown("### 💡 Auto-Insights")
+            n_total = n_leads + n_queries
+            conv_rate = (n_conv / n_leads) if n_leads else 0.0
+            insights = []   # (level, text) — level in {warn, info, good}
 
-        # Keep the exec view lean: show only the 3 most material insights, warnings
-        # first (they need action), then wins, then informational.
-        _iprio = {"warn": 0, "good": 1, "info": 2}
-        insights = sorted(insights, key=lambda x: _iprio.get(x[0], 3))[:3]
-        if not insights:
-            st.caption("No notable changes vs last period.")
-        for lvl, txt in insights:
-            # Uniform highlight (no semantic colour coding): a beige ~3 shades
-            # darker than the cream page background.
-            html = _re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", txt)
-            st.markdown(
-                f"<div style='background:{INSIGHT_BG};border-radius:8px;"
-                f"padding:10px 14px;margin-bottom:8px;color:#1f2937;font-size:14px;'>{html}</div>",
-                unsafe_allow_html=True)
+            if p_ltb:
+                diff = (ltb - p_ltb) * 100
+                lead_chg = ((n_leads - p_leads) / p_leads * 100) if p_leads else 0
+                if diff <= -2:
+                    if abs(lead_chg) < 10:
+                        why = (f"Lead volume is roughly flat ({n_leads:,} vs {p_leads:,} last period), so the "
+                               "drop points to **lead quality / speed-to-lead / follow-up** rather than volume.")
+                    elif lead_chg < 0:
+                        why = (f"Leads fell **{abs(lead_chg):.0f}%** ({p_leads:,} → {n_leads:,}) — fewer leads is "
+                               "the main driver; the rate itself held up better than the count.")
+                    else:
+                        why = (f"Leads rose **{lead_chg:.0f}%** but bookings didn't keep pace — likely a "
+                               "**capacity / response-time** bottleneck, not lead supply.")
+                    insights.append(("warn", f"**Booking rate down {abs(diff):.0f} pts** to {ltb*100:.0f}%. {why}"))
+                elif diff >= 2:
+                    insights.append(("good", f"**Booking rate up {diff:.0f} pts** to {ltb*100:.0f}% vs last "
+                                             f"period (leads {p_leads:,} → {n_leads:,}). Keep the current mix."))
+                else:
+                    insights.append(("info", f"**Booking rate steady** at {ltb*100:.0f}% "
+                                             f"(last period {p_ltb*100:.0f}%)."))
 
-        # ---- 4) Goal Progress + Set Targets (with historical suggestion) ----
-        st.markdown("### 🎯 Goal Progress")
-        sug_leads = int(round(max(n_leads, p_leads, 1) * 1.16))
-        sug_book  = int(round(max(ltb, p_ltb, 0.20) * 100))
-        sug_conv  = int(round(max(n_conv, p_conv, 1) * 1.16))
-        for _k, _v in (("e1_goal_leads", sug_leads), ("e1_goal_booking", sug_book),
-                       ("e1_goal_conv", sug_conv)):
-            if _k not in st.session_state:
-                st.session_state[_k] = _v
+            if p_sr:
+                sdiff = (sr - p_sr) * 100
+                worst = ""
+                if not _gc.empty:
+                    _w = _gc[_gc["Booked"] >= 3].sort_values("ShowRate")
+                    if len(_w):
+                        ww = _w.iloc[0]
+                        worst = (f" Largest gap on **{ww['Counsellor']}**'s calendar "
+                                 f"({ww['ShowRate']*100:.0f}%). Suggest reminder-SMS automation.")
+                if sdiff <= -2:
+                    insights.append(("warn", f"**Show rate down {abs(sdiff):.0f} pts** to {sr*100:.0f}%.{worst}"))
+                elif sdiff >= 2:
+                    insights.append(("good", f"**Show rate up {sdiff:.0f} pts** to {sr*100:.0f}%.{worst}"))
 
-        with st.expander("⚙️ Set targets (defaults = +16% on the better of this/last period)"):
-            g1, g2, g3 = st.columns(3)
-            st.session_state["e1_goal_leads"] = g1.number_input(
-                "Leads Target", min_value=0, step=10,
-                value=int(st.session_state["e1_goal_leads"]), key="e1_ni_leads")
-            st.session_state["e1_goal_booking"] = g2.number_input(
-                "Booking Rate Target (%)", min_value=0, max_value=100, step=1,
-                value=int(st.session_state["e1_goal_booking"]), key="e1_ni_booking")
-            st.session_state["e1_goal_conv"] = g3.number_input(
-                "Conversion Target", min_value=0, step=5,
-                value=int(st.session_state["e1_goal_conv"]), key="e1_ni_conv")
+            if not src.empty and n_total:
+                _top = src.iloc[0]
+                insights.append(("info", f"**{_top['Source']}** drove {_top['% of Leads']*100:.0f}% of leads "
+                                         f"({int(_top['Leads'])} of {int(src['Leads'].sum())}) this period — "
+                                         "the largest channel."))
 
-        t_leads = int(st.session_state["e1_goal_leads"])
-        t_book  = int(st.session_state["e1_goal_booking"])
-        t_conv  = int(st.session_state["e1_goal_conv"])
-        req_leads = int(round(t_conv / conv_rate)) if conv_rate else None
-        _need = (f"need ~**{req_leads:,} leads** at your current {conv_rate*100:.1f}% lead→conversion rate"
-                 if req_leads else "raise lead volume and/or booking rate")
-        st.caption(f"To hit **{t_conv} conversions** (~16% over last period's {p_conv}), you'd {_need} — "
-                   f"or lift booking rate toward **{t_book}%**.")
+            _ad = run_df("vw_exec1_adspend_detail",
+                         {"since": since.isoformat(), "until": until.isoformat()})
+            if not _ad.empty and _ad["leads"].fillna(0).sum() > 0:
+                _a = _ad.copy()
+                _a["cpa"] = (_a["spend"] * fx) / _a["leads"].replace(0, float("nan"))
+                best = _a.sort_values("leads", ascending=False).iloc[0]
+                cpa_cmp = ""
+                if blended_cpa and pd.notna(best["cpa"]):
+                    cheaper = best["cpa"] < blended_cpa
+                    cpa_cmp = (f" Its ${best['cpa']:,.0f}/lead is **{'below' if cheaper else 'above'}** the "
+                               f"blended ${blended_cpa:,.0f}/appointment — {'scale it' if cheaper else 'watch efficiency'}.")
+                insights.append(("info", f"Top ad by volume: **{str(best['campaign_name'])[:44]}** — "
+                                         f"{int(best['leads'])} Meta leads on ${best['spend']*fx:,.0f} spend.{cpa_cmp}"))
 
-        def _goal_bar(label, current, target, color, is_pct=False):
-            pct = (current / target) if target else 0
-            w = min(1.0, max(0.0, pct))
-            cur_s = f"{current:.0f}%" if is_pct else f"{current:,.0f}"
-            tgt_s = f"{target:.0f}%" if is_pct else f"{target:,.0f}"
-            hint = "" if pct >= 0.6 else " <span style='color:#FF4D66;'>· behind pace</span>"
-            st.markdown(
-                f"<div style='margin:2px 0 4px;font-weight:600;color:#111;'>{label} "
-                f"<span style='color:#6b7280;font-weight:500;'>— {cur_s} / {tgt_s} "
-                f"({pct*100:.0f}%)</span>{hint}</div>"
-                f"<div style='background:#eef0f2;border-radius:6px;height:13px;margin-bottom:12px;'>"
-                f"<div style='width:{w*100:.0f}%;background:{color};height:13px;border-radius:6px;'></div></div>",
-                unsafe_allow_html=True)
+            if n_total:
+                qshare = n_queries / n_total
+                if qshare > 0.35:
+                    insights.append(("warn", f"**{qshare*100:.0f}% of contacts are Queries** ({n_queries:,} of "
+                                             f"{n_total:,}) — a large untracked top-of-funnel (DMs with no form / "
+                                             "no contact info). Tighten lead capture to convert these."))
 
-        gb1, gb2, gb3 = st.columns(3)
-        with gb1:
-            _goal_bar("Leads", n_leads, t_leads, PAL[0])
-        with gb2:
-            _goal_bar("Booking Rate", ltb * 100, t_book, PAL[1], is_pct=True)
-        with gb3:
-            _goal_bar("Conversions", n_conv, t_conv, PAL[2])
+            # Keep the exec view lean: show only the 3 most material insights, warnings
+            # first (they need action), then wins, then informational.
+            _iprio = {"warn": 0, "good": 1, "info": 2}
+            insights = sorted(insights, key=lambda x: _iprio.get(x[0], 3))[:3]
+            if not insights:
+                st.caption("No notable changes vs last period.")
+            for lvl, txt in insights:
+                # Uniform highlight (no semantic colour coding): a beige ~3 shades
+                # darker than the cream page background.
+                html = _re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", txt)
+                st.markdown(
+                    f"<div style='background:{INSIGHT_BG};border-radius:8px;"
+                    f"padding:10px 14px;margin-bottom:8px;color:#1f2937;font-size:14px;'>{html}</div>",
+                    unsafe_allow_html=True)
 
-        # ---- 5) Funnel — Leads → Booked → Showed → Conversions ----
-        st.markdown("### 🔻 Conversion funnel")
-        _fun = pd.DataFrame({
-            "Stage": ["Leads", "Booked", "Showed", "Conversions"],
-            "Count": [n_leads, cur_booked, cur_showed, n_conv],
-        })
-        _fun["Pct"] = _fun["Count"] / (n_leads if n_leads else 1)
-        _fun["Label"] = _fun.apply(lambda r: f"{int(r['Count']):,}  ({r['Pct']*100:.0f}%)", axis=1)
-        _order = ["Leads", "Booked", "Showed", "Conversions"]
-        _base = _alt.Chart(_fun).encode(
-            y=_alt.Y("Stage:N", sort=_order, title=None,
-                     axis=_alt.Axis(labelFontSize=13, domain=False, ticks=False)),
-            x=_alt.X("Count:Q", title=None, axis=_alt.Axis(grid=False, labels=False, ticks=False)))
-        # Funnel: top-of-funnel coral red -> purple -> blue -> deep-blue conversion.
-        _bars = _base.mark_bar(height=34, cornerRadius=6).encode(
-            color=_alt.Color("Stage:N", sort=_order, legend=None,
-                             scale=_alt.Scale(domain=_order,
-                                              range=[RED, PURPLE, BLUE, "#2E7FD6"])),
-            tooltip=["Stage:N", "Count:Q", _alt.Tooltip("Pct:Q", format=".0%")])
-        _txt = _base.mark_text(align="left", dx=6, fontSize=13, fontWeight="bold",
-                               color=INK).encode(text="Label:N")
-        st.altair_chart((_bars + _txt).properties(height=240).configure_view(strokeWidth=0),
-                        use_container_width=True)
-        st.caption("Funnel uses the same definitions as the scorecards: **Leads** (created/revived, "
-                   "excl. Queries) → **Booked** → **Showed** → **Conversions** (COE/Initial Received or Won).")
+            # ---- 4) Goal Progress + Set Targets (with historical suggestion) ----
+            st.markdown("### 🎯 Goal Progress")
+            sug_leads = int(round(max(n_leads, p_leads, 1) * 1.16))
+            sug_book  = int(round(max(ltb, p_ltb, 0.20) * 100))
+            sug_conv  = int(round(max(n_conv, p_conv, 1) * 1.16))
+            for _k, _v in (("e1_goal_leads", sug_leads), ("e1_goal_booking", sug_book),
+                           ("e1_goal_conv", sug_conv)):
+                if _k not in st.session_state:
+                    st.session_state[_k] = _v
+
+            with st.expander("⚙️ Set targets (defaults = +16% on the better of this/last period)"):
+                g1, g2, g3 = st.columns(3)
+                st.session_state["e1_goal_leads"] = g1.number_input(
+                    "Leads Target", min_value=0, step=10,
+                    value=int(st.session_state["e1_goal_leads"]), key="e1_ni_leads")
+                st.session_state["e1_goal_booking"] = g2.number_input(
+                    "Booking Rate Target (%)", min_value=0, max_value=100, step=1,
+                    value=int(st.session_state["e1_goal_booking"]), key="e1_ni_booking")
+                st.session_state["e1_goal_conv"] = g3.number_input(
+                    "Conversion Target", min_value=0, step=5,
+                    value=int(st.session_state["e1_goal_conv"]), key="e1_ni_conv")
+
+            t_leads = int(st.session_state["e1_goal_leads"])
+            t_book  = int(st.session_state["e1_goal_booking"])
+            t_conv  = int(st.session_state["e1_goal_conv"])
+            req_leads = int(round(t_conv / conv_rate)) if conv_rate else None
+            _need = (f"need ~**{req_leads:,} leads** at your current {conv_rate*100:.1f}% lead→conversion rate"
+                     if req_leads else "raise lead volume and/or booking rate")
+            st.caption(f"To hit **{t_conv} conversions** (~16% over last period's {p_conv}), you'd {_need} — "
+                       f"or lift booking rate toward **{t_book}%**.")
+
+            def _goal_bar(label, current, target, color, is_pct=False):
+                pct = (current / target) if target else 0
+                w = min(1.0, max(0.0, pct))
+                cur_s = f"{current:.0f}%" if is_pct else f"{current:,.0f}"
+                tgt_s = f"{target:.0f}%" if is_pct else f"{target:,.0f}"
+                hint = "" if pct >= 0.6 else " <span style='color:#FF4D66;'>· behind pace</span>"
+                st.markdown(
+                    f"<div style='margin:2px 0 4px;font-weight:600;color:#111;'>{label} "
+                    f"<span style='color:#6b7280;font-weight:500;'>— {cur_s} / {tgt_s} "
+                    f"({pct*100:.0f}%)</span>{hint}</div>"
+                    f"<div style='background:#eef0f2;border-radius:6px;height:13px;margin-bottom:12px;'>"
+                    f"<div style='width:{w*100:.0f}%;background:{color};height:13px;border-radius:6px;'></div></div>",
+                    unsafe_allow_html=True)
+
+            gb1, gb2, gb3 = st.columns(3)
+            with gb1:
+                _goal_bar("Leads", n_leads, t_leads, PAL[0])
+            with gb2:
+                _goal_bar("Booking Rate", ltb * 100, t_book, PAL[1], is_pct=True)
+            with gb3:
+                _goal_bar("Conversions", n_conv, t_conv, PAL[2])
+
+            # ---- 5) Funnel — Leads → Booked → Showed → Conversions ----
+            st.markdown("### 🔻 Conversion funnel")
+            _fun = pd.DataFrame({
+                "Stage": ["Leads", "Booked", "Showed", "Conversions"],
+                "Count": [n_leads, cur_booked, cur_showed, n_conv],
+            })
+            _fun["Pct"] = _fun["Count"] / (n_leads if n_leads else 1)
+            _fun["Label"] = _fun.apply(lambda r: f"{int(r['Count']):,}  ({r['Pct']*100:.0f}%)", axis=1)
+            _order = ["Leads", "Booked", "Showed", "Conversions"]
+            _base = _alt.Chart(_fun).encode(
+                y=_alt.Y("Stage:N", sort=_order, title=None,
+                         axis=_alt.Axis(labelFontSize=13, domain=False, ticks=False)),
+                x=_alt.X("Count:Q", title=None, axis=_alt.Axis(grid=False, labels=False, ticks=False)))
+            # Funnel: top-of-funnel coral red -> purple -> blue -> deep-blue conversion.
+            _bars = _base.mark_bar(height=34, cornerRadius=6).encode(
+                color=_alt.Color("Stage:N", sort=_order, legend=None,
+                                 scale=_alt.Scale(domain=_order,
+                                                  range=[RED, PURPLE, BLUE, "#2E7FD6"])),
+                tooltip=["Stage:N", "Count:Q", _alt.Tooltip("Pct:Q", format=".0%")])
+            _txt = _base.mark_text(align="left", dx=6, fontSize=13, fontWeight="bold",
+                                   color=INK).encode(text="Label:N")
+            st.altair_chart((_bars + _txt).properties(height=240).configure_view(strokeWidth=0),
+                            use_container_width=True)
+            st.caption("Funnel uses the same definitions as the scorecards: **Leads** (created/revived, "
+                       "excl. Queries) → **Booked** → **Showed** → **Conversions** (COE/Initial Received or Won).")
 
 
 # =====================================================================
@@ -6994,34 +7164,6 @@ if _active_tab == "Sales Team Perf.":
             pass
         return list(dict.fromkeys(_cids))
     _nl_cids  = _stage_change_contacts(["New Lead"])
-    _bls_cids = _stage_change_contacts(["Booking Link Shared"])
-    n_new_leads = len(set(_nl_cids))
-    n_bls = len(set(_bls_cids))
-
-    # appointments CREATED in the range = slots filled (excludes cancelled & invalid),
-    # for contacts with an opp in the selected pipeline[s] — irrespective of lead date.
-    try:
-        _ab = db_exec(
-            _ORIGIN_CTE +
-            f"SELECT a.contact_id, a.appointment_id, LOWER(COALESCE(a.canonical_outcome,'')) AS outcome, "
-            f"       dc.calendar_name, a.date_added "
-            f"FROM fact_appointments a LEFT JOIN dim_calendars dc ON dc.calendar_id = a.calendar_id "
-            f"WHERE CAST(a.date_added + INTERVAL 10 HOUR AS DATE) BETWEEN ? AND ? "
-            f"  AND LOWER(COALESCE(a.appointment_status,'')) NOT IN ('cancelled', 'invalid') "
-            f"  AND a.contact_id IN (SELECT DISTINCT o.contact_id FROM fact_opportunities o "
-            f"      JOIN dim_pipelines p ON p.pipeline_id = o.pipeline_id "
-            f"      LEFT JOIN opp_origin oo ON oo.opportunity_id = o.opportunity_id "
-            f"      WHERE COALESCE(oo.origin_pipeline, p.pipeline_name) IN ({_pp}))",
-            [_s, _u] + _fp_pipes).fetchdf()
-    except Exception:
-        _ab = pd.DataFrame(columns=["contact_id", "appointment_id", "outcome", "calendar_name", "date_added"])
-    n_appt = len(_ab)
-    _ab_cids = _ab["contact_id"].tolist()
-    _ab_sorted = _ab.sort_values("date_added") if not _ab.empty else _ab
-    _ab_cal = dict(zip(_ab_sorted["contact_id"], _ab_sorted["calendar_name"])) if not _ab.empty else {}
-    _sh = _ab[_ab["outcome"] == "show"] if not _ab.empty else _ab
-    n_showed = len(_sh)
-    _sh_cids = _sh["contact_id"].tolist() if not _sh.empty else []
 
     # ---- owner mapping + person-credit for the created-in-range opps ----
     _owners = dict(db_exec("SELECT user_id, full_name FROM dim_users").fetchall())
@@ -7097,45 +7239,91 @@ if _active_tab == "Sales Team Perf.":
         else:
             st.dataframe(df, hide_index=True, use_container_width=True, height=460)
 
+    # ---- Scorecards: ONE funnel row, all measured on the NEW-LEAD COHORT --------
+    # Every card answers "of the leads that entered New Lead in this range, how many
+    # got this far". Deliberately NOT capped at the range end — a lead created on the
+    # last day would otherwise always look like a failure.
+    def _reached_stage(cids, stages):
+        """Contacts from `cids` whose opportunity has reached one of `stages` —
+        it either sits there now or a stage event recorded the move onto it."""
+        if not cids:
+            return []
+        out = []
+        for _sql in (
+            "SELECT DISTINCT o.contact_id FROM fact_opportunities o "
+            "JOIN dim_stages s ON s.stage_id = o.stage_id "
+            "WHERE s.stage_name IN ? AND o.contact_id IN ?",
+            "SELECT DISTINCT contact_id FROM fact_opp_stage_events "
+            "WHERE new_stage IN ? AND contact_id IN ?",
+        ):
+            try:
+                out += db_exec(_sql, [stages, cids]).fetchdf()["contact_id"].tolist()
+            except Exception:
+                pass
+        return list(dict.fromkeys(out))
+
+    def _cohort_outcome(cids, outcome):
+        """Contacts from `cids` with an appointment carrying this canonical outcome."""
+        if not cids:
+            return []
+        try:
+            return db_exec(
+                "SELECT DISTINCT contact_id FROM fact_appointments "
+                "WHERE LOWER(COALESCE(canonical_outcome,'')) = ? AND contact_id IN ?",
+                [outcome, cids]).fetchdf()["contact_id"].tolist()
+        except Exception:
+            return []
+
+    _nl_all = list(dict.fromkeys(_nl_cids))
+    # Post Consultation sits BEYOND Appointment Booked — those leads did book, the opp
+    # has simply moved on — so they are counted in Appointment Booked as well.
     _cardspecs = [
-        ("New Leads", n_new_leads, _nl_cids, None),
-        ("Booking Link Shared", n_bls, _bls_cids, None),
-        ("Appointment Booked", n_appt, _ab_cids, _ab_cal),
-        ("Showed", n_showed, _sh_cids, _ab_cal),
+        ("New Leads", _nl_all),
+        ("Booking Link Shared", _reached_stage(_nl_all, ["Booking Link Shared"])),
+        ("MARA Appointment Booked", _reached_stage(_nl_all, ["MARA Appointment Booked"])),
+        ("Appointment Booked", _reached_stage(_nl_all, ["Appointment Booked",
+                                                        "Post Consultation"])),
+        ("Showed", _cohort_outcome(_nl_all, "show")),
+        ("No Show", _cohort_outcome(_nl_all, "noshow")),
     ]
-    for _col, (_lbl, _val, _cids, _calm) in zip(st.columns(4), _cardspecs):
-        if _col.button(f"{_lbl.upper()}\n\n{_val:,}", key=f"stp_card_{_lbl}",
-                       use_container_width=True):
-            _stp_drill(_lbl, _stp_detail(_cids, _calm))
-    st.caption("**New Leads / Booking Link Shared** = opportunities that **entered** that stage within "
-               "the range — either a stage change onto it, or an opp **created straight into** it "
-               "(L2C-Education / L2C-VISA, judged on the pipeline the opp **started in**, so leads later "
-               "pushed to CLT still count). **Appointment Booked** = appointments "
-               "**created** in the range (slots filled — excludes cancelled & invalid), irrespective of "
-               "when the lead/opp was created. **Showed** = of those appointments, the one attended "
-               "(status = show). **Click any card** for the email list (stage · pipeline · status · phone "
-               "· owner · follower · calendar · source).")
+    for _col, (_lbl, _cids) in zip(st.columns(len(_cardspecs)), _cardspecs):
+        _pc = (len(_cids) / len(_nl_all) * 100) if _nl_all else 0
+        _sub = "" if _lbl == "New Leads" else f"  ·  {_pc:.0f}%"
+        if _col.button(f"{_lbl.upper()}\n\n{len(_cids):,}{_sub}",
+                       key=f"stp_card_{_lbl}", use_container_width=True):
+            _stp_drill(_lbl, _stp_detail(_cids))
+    st.caption("Every card follows the **same cohort**: the leads whose opportunity **entered "
+               "New Lead** in this range (a stage change onto it, or an opp created straight into "
+               "it — L2C-Education / L2C-VISA, judged on the pipeline the opp **started in**, so "
+               "leads later pushed to CLT still count). The rest ask how far those leads have got — "
+               "**now or at any point since**, not just inside the range. **Appointment Booked** "
+               "includes leads already moved on to **Post Consultation**. **Showed / No Show** = "
+               "attended / did not attend an appointment. A lead can appear under more than one "
+               "stage, so the cards do not sum. Percentages are of the new-lead count. "
+               "**Click any card** for the email list (stage · pipeline · status · phone · owner · "
+               "follower · calendar · source).")
 
     # ---- Charts: bar (scorecard totals) + pie (opps by owner) ----
     _gb, _gp = st.columns([3, 2])
     with _gb:
         st.markdown("**Scorecard totals**")
-        _order = ["New Leads", "Booking Link Shared", "Appointment Booked", "Showed"]
+        # mirrors the scorecard row above, in the same funnel order
+        _order = [_lbl for _lbl, _ in _cardspecs]
         _m = pd.DataFrame({"Metric": _order,
-                           "Count": [n_new_leads, n_bls, n_appt, n_showed]})
+                           "Count": [len(_c) for _, _c in _cardspecs]})
         _bar = _alt.Chart(_m).mark_bar(cornerRadius=6).encode(
             x=_alt.X("Count:Q", title=None, axis=_alt.Axis(grid=False, labels=False, ticks=False)),
             y=_alt.Y("Metric:N", sort=_order, title=None,
                      axis=_alt.Axis(domain=False, ticks=False, labelFontSize=13)),
             color=_alt.Color("Metric:N", legend=None,
                              scale=_alt.Scale(domain=_order,
-                                              range=["#4DA6FF", "#7A52CC", "#f6995c",
-                                                     "#2EAD8F", "#FF4D66"])),
+                                              range=["#4DA6FF", "#7A52CC", "#00A6A6",
+                                                     "#f6995c", "#2EAD8F", "#FF4D66"])),
             tooltip=["Metric:N", "Count:Q"])
         _lab = _alt.Chart(_m).mark_text(align="left", dx=6, fontSize=13, fontWeight="bold",
                                         color="#1A1A1A").encode(
             x="Count:Q", y=_alt.Y("Metric:N", sort=_order), text="Count:Q")
-        st.altair_chart((_bar + _lab).properties(height=180).configure_view(strokeWidth=0),
+        st.altair_chart((_bar + _lab).properties(height=240).configure_view(strokeWidth=0),
                         use_container_width=True)
     with _gp:
         st.markdown("**Opportunities by person**")
@@ -7228,6 +7416,8 @@ if _active_tab == "Sales Team Perf.":
                 "Lead Arvl Date": _det["contact_id"].map(_ld_m).map(
                     lambda v: pd.to_datetime(v).strftime("%Y-%m-%d") if pd.notna(v) else "—").values,
                 "Owner": _det["Owner"].values,
+                "Follower": _det["opportunity_id"].map(_foll_opp).fillna("—")
+                            .replace("", "—").values,
                 "Calendar Name": _det["contact_id"].map(_cal_m).fillna("—").replace("", "—").values,
                 "Source": _det["contact_id"].map(_src_m).fillna("—").replace("", "—").values,
                 "Number": _det["contact_id"].map(_ph_m).map(
@@ -7238,7 +7428,8 @@ if _active_tab == "Sales Team Perf.":
             })
             st.dataframe(_detail, hide_index=True, use_container_width=True, height=460)
             st.caption("**Owner** is the opportunity's assigned user — a counsellor once the lead is "
-                       "handed over (the rep is a follower from then on). **Pipeline** is where the opp "
+                       "handed over; **Follower** lists everyone following that opportunity, which is "
+                       "where the sales rep shows up after the hand-over. **Pipeline** is where the opp "
                        "sits now, **Started In** the pipeline it was created in (rows qualify on "
                        "*Started In*). **Lead Arvl Date** = lead created/revived date · **Follow up** = "
                        "the number in the contact's `l2c-follow-up-N` tag (blank until the ETL ingests "
@@ -7343,8 +7534,6 @@ if _active_tab == "WBR":
         # (a booked lead's appointment calendar → its counsellor), so it reconciles with
         # Meta + Organic Appointment Booked.
         def _svc(nm):
-            if "Navneet Kaur" in nm:            # override: runs free education consults
-                return "education"
             if "MARA" in nm:
                 return "visa"
             if "Career Counsellor" in nm:
@@ -7355,8 +7544,8 @@ if _active_tab == "WBR":
         _clbl = {c["name"]: f"{c['name'].split(' - ')[0].split()[0]} ({_svc(c['name'])})"
                  for c in COUNSELLORS}
         _cid2lbl = {cid: _clbl[c["name"]] for c in COUNSELLORS for cid in c["calendar_ids"]}
-        _CROWS = ["Gurbir (visa)", "Nasir (visa)", "Turab (career)", "Kajal (education)",
-                  "Navneet (education)", "Saurab (education)", "Wajahad (education)"]
+        _CROWS = ["Gurbir (visa)", "Nasir (visa)", "Tanvir (visa)", "Turab (career)",
+                  "Kajal (education)", "Saurab (education)", "Wajahad (education)"]
         _dcm = dict(db_exec("SELECT calendar_id, calendar_name FROM dim_calendars").fetchall())
         _calname2lbl = {_dcm[cid]: lbl for cid, lbl in _cid2lbl.items() if cid in _dcm}
 
@@ -7472,8 +7661,7 @@ if _active_tab == "WBR":
         # counted by the COUNSELLOR WHOSE CALENDAR the contact's appointment is on
         # (education consultants). calendar_name is already on the conversions view.
         st.markdown("#### 🎓 COE conversions — by counsellor")
-        _EDU_ROWS = ["Kajal (education)", "Navneet (education)",
-                     "Saurab (education)", "Wajahad (education)"]
+        _EDU_ROWS = ["Kajal (education)", "Saurab (education)", "Wajahad (education)"]
         _conv = run_df("vw_exec1_conversions", {"since": _mstr, "until": _ustr})
         if _conv.empty or "conv_type" not in _conv.columns:
             _coe = pd.DataFrame()
@@ -7577,7 +7765,6 @@ if _active_tab == "Weekly Report":
 
     # ---- counsellor label mapping (calendar_name → 'First (service)') ----
     def _wr_svc(nm):
-        if "Navneet Kaur" in nm:       return "education"   # runs free education consults
         if "MARA" in nm:               return "visa"
         if "Career Counsellor" in nm:  return "career"
         return "education"
@@ -7586,8 +7773,8 @@ if _active_tab == "Weekly Report":
     _cid2lbl = {cid: _clbl[c["name"]] for c in COUNSELLORS for cid in c["calendar_ids"]}
     _dcm = dict(db_exec("SELECT calendar_id, calendar_name FROM dim_calendars").fetchall())
     _calname2lbl = {_dcm[cid]: lbl for cid, lbl in _cid2lbl.items() if cid in _dcm}
-    _CROWS = ["Gurbir (visa)", "Nasir (visa)", "Turab (career)", "Kajal (education)",
-              "Navneet (education)", "Saurab (education)", "Wajahad (education)"]
+    _CROWS = ["Gurbir (visa)", "Nasir (visa)", "Tanvir (visa)", "Turab (career)",
+              "Kajal (education)", "Saurab (education)", "Wajahad (education)"]
 
     # ---- formatters ----
     def _money(v):  return "—" if v is None or pd.isna(v) else f"${v:,.0f}"
@@ -7717,8 +7904,8 @@ if _active_tab == "Weekly Report":
                     .reindex(index=rows, columns=_cols, fill_value=0))
 
         st.markdown("#### 🎓 COE Conversion — by counsellor")
-        _coe_t = _conv_table("COE", ["Kajal (education)", "Navneet (education)",
-                                     "Saurab (education)", "Wajahad (education)"])
+        _coe_t = _conv_table("COE", ["Kajal (education)", "Saurab (education)",
+                                     "Wajahad (education)"])
         if _coe_t is not None:
             st.dataframe(_coe_t, use_container_width=True)
         else:
@@ -7867,8 +8054,6 @@ if _active_tab == "Breakdown":
 
     # counsellor calendar_name -> "Firstname (service)" (same mapping as the WBR tab)
     def _brk_svc(nm):
-        if "Navneet Kaur" in nm:
-            return "education"
         if "MARA" in nm:
             return "visa"
         if "Career Counsellor" in nm:
@@ -7879,8 +8064,8 @@ if _active_tab == "Breakdown":
     _brk_clbl = {c["name"]: f"{c['name'].split(' - ')[0].split()[0]} ({_brk_svc(c['name'])})"
                  for c in COUNSELLORS}
     _brk_cid2lbl = {cid: _brk_clbl[c["name"]] for c in COUNSELLORS for cid in c["calendar_ids"]}
-    _BRK_CROWS = ["Gurbir (visa)", "Nasir (visa)", "Turab (career)", "Kajal (education)",
-                  "Navneet (education)", "Saurab (education)", "Wajahad (education)"]
+    _BRK_CROWS = ["Gurbir (visa)", "Nasir (visa)", "Tanvir (visa)", "Turab (career)",
+                  "Kajal (education)", "Saurab (education)", "Wajahad (education)"]
     _brk_dcm = dict(db_exec("SELECT calendar_id, calendar_name FROM dim_calendars").fetchall())
     _brk_calname2lbl = {_brk_dcm[cid]: lbl for cid, lbl in _brk_cid2lbl.items() if cid in _brk_dcm}
     # owner FIRST-name -> counsellor label. Used to attribute a booked-stage

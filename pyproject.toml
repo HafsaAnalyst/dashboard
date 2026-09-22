@@ -1,0 +1,22 @@
+[project]
+name = "migration-dashboard-api"
+version = "0.1.0"
+description = "Data API for The Migration Dashboard, deployed as a Vercel Python Function."
+requires-python = ">=3.12,<3.14"
+
+# Deliberately minimal. Vercel prefers pyproject.toml over requirements.txt, so
+# THIS is the manifest the Vercel build installs -- the root requirements.txt is
+# left alone for local dev and the existing Streamlit deployment, and its heavy
+# extras (streamlit, prophet, matplotlib, google-*) never reach the function
+# bundle. Anything the API imports at runtime must be listed here.
+#
+# NOTE: no fastapi/flask/django on purpose. A Python framework preset takes
+# precedence over file-based /api functions and would take over the whole
+# project, so api/index.py is a plain ASGI app instead. See api/index.py.
+dependencies = [
+    "duckdb==1.5.3",
+    "pandas==3.0.3",
+    "numpy==2.4.6",
+    "pyarrow==24.0.0",
+    "PyYAML",
+]
