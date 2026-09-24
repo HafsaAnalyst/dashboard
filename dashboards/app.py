@@ -696,7 +696,7 @@ INSIGHT_BG = "#d9d2c0"
 # ---------------------------------------------------------------------
 METRIC_DEFS = {
     "exec": {
-        "Leads": "Unique contacts created or revived in the period (plus contacts booked-in that period). Counts every source. Excludes No Activity & Queries.",
+        "Leads": "Unique contacts created or revived in the period. Counts intake even when GHL failed to create a sales opportunity; excludes anonymous conversation-only Queries.",
         "Queries": "Contacts with no pipeline/opportunity assigned — general enquiries, not yet real leads. Shown separately so they don't inflate Leads.",
         "Booked": "Leads who booked a consultation appointment in the period.",
         "Showed": "Booked consultations the lead actually attended.",
@@ -5400,8 +5400,9 @@ if _active_tab in ("Executive", "Executive Summary"):
             e1["city"] = None
             e1["Owner"] = None
         e1["booked_in_range"] = e1["booked_in_range"].fillna(False).astype(bool)
-        # 'No Activity' = bare CRM records (no form/conversation/pipeline/appt/
-        # payment) — never counted as leads. Drop them up front.
+        # 'No Activity' covers explicit exclusions and old records with no
+        # acquisition activity. Newly-created contacts remain visible even when
+        # GHL failed to create an opportunity.
         e1 = e1[e1["refined_source"] != "No Activity"].copy()
         # FUNNEL: a lead counts only if it actually ARRIVED in the window — created or
         # revived here — NOT merely booked here (a March lead who books in July is not a

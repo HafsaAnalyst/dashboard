@@ -108,7 +108,7 @@ export default function DashboardPage() {
               Executive_1 — Leads by source
             </h2>
             <span className="text-[12px] font-medium text-[var(--color-hint)]">
-              created or revived in the selected range
+              intake retained even when opportunity creation fails
             </span>
           </div>
 
@@ -124,7 +124,7 @@ export default function DashboardPage() {
               emptyMessage="No leads created or revived in this window."
               caption={
                 "Raw rows from vw_exec1_lead_detail. The Streamlit tab applies further pandas " +
-                "filtering on top of this view (No Activity removal, created-or-revived funnel " +
+                "filtering on top of this view (explicit exclusion removal, created-or-revived funnel " +
                 "rule, unmapped Paid-Social campaign exclusion, no-email exclusion) before " +
                 "counting leads — that logic is not yet ported, so these counts are the " +
                 "pre-filter population, not the headline Leads number."

@@ -1772,12 +1772,10 @@ cohort AS (
     FROM fact_contacts c
     LEFT JOIN last_sub s ON s.contact_id = c.contact_id
     LEFT JOIN appt_in_range air ON air.contact_id = c.contact_id
-    -- exclude the Instagram AI auto-responder contact (AI-generated messages),
-    -- our own agency staff accounts (@themigration.com.au), and test contacts
-    -- (any email containing 'test', e.g. testyy@rt.com / johnsmithtesting@…) — not leads.
+    -- Exclude only the Instagram AI auto-responder. Internal/test-like addresses
+    -- remain visible in the intake control total so failed opportunity automation
+    -- cannot silently remove them from Leads.
     WHERE LOWER(TRIM(COALESCE(c.contact_name, ''))) NOT IN ('insta user', 'insta ai')
-      AND LOWER(COALESCE(c.email, '')) NOT LIKE '%@themigration.com.au'
-      AND LOWER(COALESCE(c.email, '')) NOT LIKE '%test%'
       AND (CAST(c.date_added + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
        OR CAST(s.last_sub  + INTERVAL 10 HOUR AS DATE) BETWEEN $since AND $until
        OR air.contact_id IS NOT NULL)
@@ -1856,19 +1854,12 @@ meta_ck AS (
 -- GHL "Lead Source" custom field (Meta Ads / Walk-in / Website Form / Social
 -- Media DM / Chatbot / Email Marketing) — an explicit, human/CRM-set source.
 clead AS (SELECT contact_id, lead_source FROM fact_contact_lead_source)
--- Lead qualification. A genuine lead must have an opportunity (pipeline) OR have
--- booked an appointment — a contact with NEITHER is just untracked traffic, not a
--- lead, so re-bucket it to 'No Activity' (excluded from the Leads count). A contact
--- in the 'Junk Leads' stage is likewise not a lead. Google-organic (GBP/GMB) tags
--- are exempt (kept as a real organic source). NOTE: the `appt_booked` referenced
--- here is the INNER, pre-gate flag = 'has ANY appointment' (a.contact_id IS NOT NULL),
--- so "booked an appointment" holds even for an appointment before the lead_date.
+-- Opportunity creation is a downstream funnel outcome, not an intake requirement.
+-- A contact therefore remains a lead when GHL fails to create its sales opportunity.
+-- Explicit Junk Leads remain excluded.
 SELECT * REPLACE (
     CASE
         WHEN stage = 'Junk Leads' THEN 'No Activity'
-        WHEN is_query_only THEN 'No Activity'
-        WHEN pipeline IS NULL AND appt_booked = 0 AND NOT is_google_organic
-             THEN 'No Activity'
         ELSE refined_source
     END AS refined_source,
     -- Only count an appointment as this lead's Booking/Showed if it was created
@@ -1938,11 +1929,9 @@ SELECT
              OR (COALESCE(ls.campaign,'') <> ''
                  AND LOWER(ls.campaign) NOT LIKE 'gmb%'
                  AND LOWER(ls.campaign) NOT LIKE 'gbp%')                     THEN 'Paid Social'
-        -- LEAD QUALIFICATION: a contact with NO form, NO appointment, NOT in any
-        -- pipeline and NO payment is an inquiry, not a lead. With a real inbound
-        -- conversation -> Queries; otherwise -> No Activity. This overrides bare
-        -- attribution tags ('Referral'/'Social media' alone is not a lead).
-        -- canonical meta_paid / website_form / organic_seo = a real form, kept.
+        -- Conversation-only records remain Queries. A contact created in the
+        -- reporting window remains Unknown intake even if its opportunity/form
+        -- automation is missing. Canonical form sources continue below.
         WHEN ls.contact_id IS NULL AND a.contact_id IS NULL
              AND lo.pipeline_name IS NULL AND pe.contact_id IS NULL
              AND COALESCE(ch.canonical_source,'') NOT IN ('meta_paid','organic_seo','website_form')
@@ -1954,7 +1943,9 @@ SELECT
                       OR LOWER(COALESCE(ch.latest_attribution_medium,'')) IN ('gbp','gmb','organic')
                       OR LOWER(COALESCE(ch.first_attribution_medium,''))  IN ('gbp','gmb','organic'))
            THEN (CASE WHEN cc.channel IS NOT NULL AND cc.channel <> 'Email'
-                      THEN 'Queries' ELSE 'No Activity' END)
+                      THEN 'Queries'
+                      WHEN ch.created_date BETWEEN $since AND $until THEN 'Unknown'
+                      ELSE 'No Activity' END)
         -- Facebook (conversation channel OR form referrer/utm) -> Paid Social
         -- (Facebook is a paid channel here). Requires a captured email so an
         -- anonymous Facebook DM still falls through to Queries.
@@ -2075,11 +2066,12 @@ SELECT
         -- (e.g. a booking-confirmation we sent) is NOT an inquiry -> Unknown.
         WHEN lo.pipeline_name IS NULL AND ls.contact_id IS NULL
              AND cc.channel IS NOT NULL AND cc.channel <> 'Email'                   THEN 'Queries'
-        -- No Activity = a bare CRM record: no form, no conversation, no pipeline,
-        -- no appointment and no payment (mostly created directly in the CRM).
-        -- These are NOT real leads and are excluded from the Leads count.
+        -- A newly-created bare contact is Unknown intake, not silently discarded.
+        -- Older booked-in records without acquisition activity remain No Activity.
         WHEN ls.contact_id IS NULL AND cc.channel IS NULL AND lo.pipeline_name IS NULL
-             AND a.contact_id IS NULL AND pe.contact_id IS NULL                     THEN 'No Activity'
+             AND a.contact_id IS NULL AND pe.contact_id IS NULL
+           THEN CASE WHEN ch.created_date BETWEEN $since AND $until
+                     THEN 'Unknown' ELSE 'No Activity' END
         -- ===== rescue would-be 'Unknown' leads via additional signals =====
         -- 1) the explicit GHL "Lead Source" custom field (most authoritative)
         WHEN cl.lead_source = 'Walk-in'                                             THEN 'Walk-in'
