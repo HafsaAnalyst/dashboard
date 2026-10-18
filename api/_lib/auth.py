@@ -62,3 +62,13 @@ def check_password(candidate: str) -> bool:
 def auth_disabled() -> bool:
     """Local dev convenience: with no password configured, don't lock the app."""
     return not os.getenv("DASHBOARD_PASSWORD")
+
+
+def check_agent_token(candidate: str) -> bool:
+    """Shared secret for server-to-server callers (e.g. a GHL AI Studio Custom
+    Action) that can't do the cookie/password login flow. Separate secret from
+    DASHBOARD_PASSWORD so rotating one doesn't affect the other."""
+    expected = os.getenv("AI_AGENT_TOKEN")
+    if not expected or not candidate:
+        return False
+    return hmac.compare_digest(candidate.encode(), expected.encode())

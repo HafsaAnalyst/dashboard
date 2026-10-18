@@ -200,11 +200,9 @@ COUNSELLORS = [
     },
     {
         # Replaced Navneet Kaur (her two calendars went inactive after Aug 2026).
-        # Tanvir is MARA Certified — a PAID consultant — and has a single calendar
-        # with no separate Online variant, so her appointments all read as Onsite
-        # until an Online calendar exists for her.
+        # Tanvir is MARA Certified — a PAID consultant — with onsite + online calendars.
         "name": "Tanvir Kaur - MARA Certified",
-        "calendar_ids": ["9tFSkqULRGccND8lLRif"],
+        "calendar_ids": ["9tFSkqULRGccND8lLRif", "D0qPUWX65S4IsSIpfvJB"],
         "is_paid": True,
         "type": "Paid · MARA · Mel",
         "city": "Melbourne",

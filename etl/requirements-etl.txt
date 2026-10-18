@@ -10,3 +10,4 @@ python-dotenv
 google-analytics-data
 google-api-python-client
 google-auth
+google-ads

@@ -6,10 +6,13 @@ would swallow every request, including the Next.js frontend's. Framework-free
 keeps the Next.js preset in charge of the project and this file serving /api/*.
 
 Routes (all under /api, see the rewrite in vercel.json):
-    GET  /api/health   data-source health + freshness
-    GET  /api/meta     filter options, tab list, view catalogue
-    POST /api/login    exchange the shared password for a session cookie
-    POST /api/query    run one or more views and return their rows
+    GET  /api/health      data-source health + freshness
+    GET  /api/meta        filter options, tab list, view catalogue
+    POST /api/login       exchange the shared password for a session cookie
+    POST /api/query       run one or more views and return their rows
+    GET/POST /api/ai-summary
+        Token-authed (X-Agent-Token header, not the browser cookie) digest of
+        the executive scorecards for a GHL AI Studio Custom Action to call.
 """
 from __future__ import annotations
 
@@ -24,7 +27,7 @@ from urllib.parse import parse_qs
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _lib import auth                                              # noqa: E402
+from _lib import ai_summary, auth                                  # noqa: E402
 from _lib.db import DataSourceUnavailable, health, last_refreshed  # noqa: E402
 from _lib.queries import (                                         # noqa: E402
     CITIES, PERIODS, df_to_payload, load_queries, resolve_period, run_df, run_view,
@@ -146,6 +149,22 @@ def route_query(body):
     return 200, {"binds": binds, "period": period, "results": results}
 
 
+def route_ai_summary(params: dict):
+    """Params (query string on GET, JSON body on POST): period, since, until,
+    city — same shape as /api/query's period resolution. Returns a compact
+    digest for a GHL AI Studio Custom Action: a few numbers plus a ready-to-speak
+    sentence, no raw tables."""
+    period = str(params.get("period") or "Current month")
+    city = str(params.get("city") or "All")
+    try:
+        digest = ai_summary.build_summary(period, params.get("since"), params.get("until"), city)
+    except DataSourceUnavailable as e:
+        return 503, {"error": str(e), "lapsed": e.lapsed}
+    except Exception as e:
+        return 500, {"error": f"Summary failed: {e}"}
+    return 200, digest
+
+
 # ---------------------------------------------------------------------
 # Minimal ASGI plumbing
 # ---------------------------------------------------------------------
@@ -176,6 +195,15 @@ def _authorized(scope):
     jar.load(raw)
     morsel = jar.get(auth.COOKIE_NAME)
     return auth.verify(morsel.value if morsel else None)
+
+
+def _agent_authorized(scope):
+    """Token-header auth for server-to-server callers (GHL Custom Action) that
+    can't hold the browser session cookie. Header name: X-Agent-Token."""
+    for name, value in scope.get("headers", []):
+        if name.decode().lower() == "x-agent-token":
+            return auth.check_agent_token(value.decode())
+    return False
 
 
 async def _send_json(send, status, payload, headers=None):
@@ -209,6 +237,17 @@ async def app(scope, receive, send):
             body = json.loads(await _read_body(receive) or b"{}")
             status, payload, headers = route_login(body)
             return await _send_json(send, status, payload, headers)
+
+        if route == "ai-summary":
+            if not _agent_authorized(scope):
+                return await _send_json(send, 401, {"error": "Not authenticated"})
+            if method == "POST":
+                params = json.loads(await _read_body(receive) or b"{}")
+            else:
+                params = {k: v[0] for k, v in parse_qs(
+                    scope.get("query_string", b"").decode()).items()}
+            status, payload = route_ai_summary(params)
+            return await _send_json(send, status, payload)
 
         if not _authorized(scope):
             return await _send_json(send, 401, {"error": "Not authenticated"})

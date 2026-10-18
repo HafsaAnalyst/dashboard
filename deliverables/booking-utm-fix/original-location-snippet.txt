@@ -1,0 +1,201 @@
+/**
+ * Education booking: keep the form Location ID as the default GHL API location,
+ * and map the lead's own location onto the contact custom field.
+ */
+
+if ( ! defined( 'TM_EDU_DEFAULT_LOCATION_ID' ) ) {
+	define( 'TM_EDU_DEFAULT_LOCATION_ID', 'Cy61ZIoB1Q68krX0lSZA' );
+}
+
+if ( ! defined( 'TM_EDU_LEAD_LOCATION_FIELD_ID' ) ) {
+	define( 'TM_EDU_LEAD_LOCATION_FIELD_ID', 'tjSCvNBF4xxPpSHAABUO' );
+}
+
+if ( ! defined( 'TM_EDU_LEAD_LOCATION_FIELD_KEY' ) ) {
+	define( 'TM_EDU_LEAD_LOCATION_FIELD_KEY', 'preferred_study_location' );
+}
+
+$GLOBALS['TM_EDU_LEAD_LOCATION_MAP'] = array(
+	'sydney'    => 'Sydney, NSW',
+	'melbourne' => 'Melbourne, VIC',
+	'other'     => 'No preference',
+);
+
+$GLOBALS['TM_EDU_LEAD_LOCATION_LABELS'] = array(
+	'sydney'    => 'Sydney',
+	'melbourne' => 'Melbourne',
+	'other'     => 'Other',
+);
+
+function tm_education_normalize_lead_location( string $value ): string {
+	$key = strtolower( trim( $value ) );
+	$key = str_replace( array( ' ', '_' ), '-', $key );
+
+	if ( in_array( $key, array( 'sydney', 'sydney,-nsw', 'sydney,nsw' ), true ) ) {
+		return 'sydney';
+	}
+	if ( in_array( $key, array( 'melbourne', 'melbourne,-vic', 'melbourne,vic' ), true ) ) {
+		return 'melbourne';
+	}
+	if ( '' === $key ) {
+		return '';
+	}
+	return 'other';
+}
+
+function tm_education_default_location_id(): string {
+	if ( class_exists( 'TM_GHL_Config' ) ) {
+		return TM_GHL_Config::location_id();
+	}
+	return TM_EDU_DEFAULT_LOCATION_ID;
+}
+
+function tm_education_register_lead_location_client(): void {
+	if ( class_exists( 'TM_GHL_Client_With_Lead_Location', false ) ) {
+		return;
+	}
+	if ( ! class_exists( 'TM_GHL_Client' ) ) {
+		return;
+	}
+
+	class TM_GHL_Client_With_Lead_Location extends TM_GHL_Client {
+		public string $lead_location_value = '';
+		public string $lead_location_label = '';
+
+		public function upsert_contact( array $contact ) {
+			$contact['locationId'] = tm_education_default_location_id();
+
+			if ( '' !== $this->lead_location_label ) {
+				$contact['city'] = $this->lead_location_label;
+			}
+
+			if ( '' !== $this->lead_location_value ) {
+				$contact['customFields'] = array(
+					array(
+						'id'          => TM_EDU_LEAD_LOCATION_FIELD_ID,
+						'key'         => TM_EDU_LEAD_LOCATION_FIELD_KEY,
+						'field_value' => $this->lead_location_value,
+					),
+				);
+			}
+
+			return parent::upsert_contact( $contact );
+		}
+	}
+}
+
+function tm_education_book_with_lead_location( WP_REST_Request $request ) {
+	tm_education_register_lead_location_client();
+
+	if ( ! class_exists( 'TM_GHL_Client_With_Lead_Location' ) || ! class_exists( 'TM_Education_Booking' ) ) {
+		return new WP_Error( 'ghl_config', 'Booking service is not configured.' );
+	}
+
+	$first_name = sanitize_text_field( (string) $request->get_param( 'firstName' ) );
+	$last_name  = sanitize_text_field( (string) $request->get_param( 'lastName' ) );
+	$email      = TM_Education_Booking::validate_email( (string) $request->get_param( 'email' ) );
+	$phone      = TM_Education_Booking::validate_phone( (string) $request->get_param( 'phone' ) );
+	$start_time = sanitize_text_field( (string) $request->get_param( 'startTime' ) );
+	$end_time   = sanitize_text_field( (string) $request->get_param( 'endTime' ) );
+
+	if ( is_wp_error( $email ) ) {
+		return $email;
+	}
+	if ( is_wp_error( $phone ) ) {
+		return $phone;
+	}
+
+	if ( '' === $first_name ) {
+		return new WP_Error(
+			'validation',
+			'Please enter your first name.',
+			array(
+				'status' => 422,
+				'field'  => 'firstName',
+			)
+		);
+	}
+
+	if ( '' === $last_name ) {
+		return new WP_Error(
+			'validation',
+			'Please enter your last name.',
+			array(
+				'status' => 422,
+				'field'  => 'lastName',
+			)
+		);
+	}
+
+	$lead_key = tm_education_normalize_lead_location(
+		(string) $request->get_param( 'leadLocation' )
+	);
+	if ( '' === $lead_key ) {
+		return new WP_Error(
+			'validation',
+			'Please choose a location.',
+			array(
+				'status' => 422,
+				'field'  => 'leadLocation',
+			)
+		);
+	}
+
+	$client                      = new TM_GHL_Client_With_Lead_Location();
+	$client->lead_location_value = (string) ( $GLOBALS['TM_EDU_LEAD_LOCATION_MAP'][ $lead_key ] ?? '' );
+	$client->lead_location_label = (string) ( $GLOBALS['TM_EDU_LEAD_LOCATION_LABELS'][ $lead_key ] ?? 'Other' );
+
+	$service = new TM_Education_Booking( $client );
+	return $service->book_appointment(
+		array(
+			'firstName'  => $first_name,
+			'lastName'   => $last_name,
+			'email'      => $email,
+			'phone'      => $phone,
+			'locationId' => tm_education_default_location_id(),
+			'startTime'  => $start_time,
+			'endTime'    => $end_time,
+		)
+	);
+}
+
+add_action(
+	'rest_api_init',
+	static function () {
+		if ( ! class_exists( 'TM_Education_REST' ) || ! class_exists( 'TM_GHL_Client' ) || ! class_exists( 'TM_Education_Booking' ) ) {
+			return;
+		}
+
+		tm_education_register_lead_location_client();
+
+		register_rest_route(
+			'education/v1',
+			'/book',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => 'tm_education_book_with_lead_location',
+				'permission_callback' => array( 'TM_Education_REST', 'verify_nonce' ),
+			),
+			true
+		);
+	},
+	20
+);
+
+add_action(
+	'wp_footer',
+	static function () {
+		if ( ! is_page( array( 1281, 13558 ) ) ) {
+			return;
+		}
+		$payload = array(
+			'locationId'    => tm_education_default_location_id(),
+			'leadLocations' => $GLOBALS['TM_EDU_LEAD_LOCATION_MAP'],
+		);
+		printf(
+			'<script id="tm-education-location-config">window.TM_EDUCATION_API=Object.assign(window.TM_EDUCATION_API||{},%s);</script>',
+			wp_json_encode( $payload, JSON_UNESCAPED_SLASHES )
+		);
+	},
+	6
+);
